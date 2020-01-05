@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,10 +23,11 @@
 #ifndef SCRIPT_H
 #define SCRIPT_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+#include "common.h"
+
+#define PAL_ITEM_DESC_BOTTOM	(1 << 15)
+
+PAL_C_LINKAGE_BEGIN
 
 WORD
 PAL_RunTriggerScript(
@@ -41,8 +43,6 @@ PAL_RunAutoScript(
 
 extern BOOL       g_fScriptSuccess;
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
 
 #endif

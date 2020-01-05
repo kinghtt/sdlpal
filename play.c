@@ -1,10 +1,8 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2008, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
-//
-// Portions based on PALx Project by palxex.
-// Copyright (c) 2006, Pal Lockheart <palxex@gmail.com>.
 //
 // This file is part of SDLPAL.
 //
@@ -46,6 +44,7 @@ PAL_GameUpdate(
    WORD            wEventObjectID, wDir;
    int             i;
    LPEVENTOBJECT   p;
+   WORD            wResult;
 
    //
    // Check for trigger events
@@ -63,8 +62,9 @@ PAL_GameUpdate(
          gpGlobals->fEnteringScene = FALSE;
 
          i = gpGlobals->wNumScene - 1;
-         gpGlobals->g.rgScene[i].wScriptOnEnter =
-            PAL_RunTriggerScript(gpGlobals->g.rgScene[i].wScriptOnEnter, 0xFFFF);
+         wResult = PAL_RunTriggerScript(gpGlobals->g.rgScene[i].wScriptOnEnter, 0xFFFF);
+         if (!gpGlobals->fGameStart)
+            gpGlobals->g.rgScene[i].wScriptOnEnter = wResult;
 
          if (gpGlobals->fEnteringScene || gpGlobals->fGameStart)
          {
@@ -574,13 +574,7 @@ PAL_StartFrame(
       //
       // Quit Game
       //
-      if (PAL_ConfirmMenu())
-      {
-         PAL_PlayMUS(0, FALSE, 2);
-         PAL_FadeOut(2);
-         PAL_Shutdown();
-         exit(0);
-      }
+      PAL_QuitGame();
    }
 
    if (--gpGlobals->wChasespeedChangeCycles == 0)
@@ -612,7 +606,7 @@ PAL_WaitForKey(
 
    PAL_ClearKeyState();
 
-   while (wTimeOut == 0 || SDL_GetTicks() < dwTimeOut)
+   while (wTimeOut == 0 || !SDL_TICKS_PASSED(SDL_GetTicks(), dwTimeOut))
    {
       UTIL_Delay(5);
 

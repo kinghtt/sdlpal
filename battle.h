@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -21,11 +22,6 @@
 
 #ifndef BATTLE_H
 #define BATTLE_H
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 #include "global.h"
 #include "uibattle.h"
@@ -85,9 +81,11 @@ typedef struct tagBATTLEENEMY
    WORD               wCurrentFrame;          // current frame number
    FIGHTERSTATE       state;                  // state of this enemy
 
+#ifndef PAL_CLASSIC
    BOOL               fTurnStart;
    BOOL               fFirstMoveDone;
    BOOL               fDualMove;
+#endif
 
    WORD               wScriptOnTurnStart;
    WORD               wScriptOnBattleEnd;
@@ -111,6 +109,7 @@ typedef struct tagBATTLEPLAYER
    WORD               wCurrentFrame;        // current frame number
    FIGHTERSTATE       state;                // state of this player
    BATTLEACTION       action;               // action to perform
+   BATTLEACTION       prevAction;           // action of the previous turn
    BOOL               fDefending;           // TRUE if player is defending
    WORD               wPrevHP;              // HP value prior to action
    WORD               wPrevMP;              // MP value prior to action
@@ -191,8 +190,15 @@ typedef struct tagBATTLE
    BOOL             fRepeat;              // TRUE if player pressed Repeat
    BOOL             fForce;               // TRUE if player pressed Force
    BOOL             fFlee;                // TRUE if player pressed Flee
+   BOOL             fPrevAutoAtk;         // TRUE if auto-attack was used in the previous turn
+   BOOL             fPrevPlayerAutoAtk;   // TRUE if auto-attack was used by previous player in the same turn
+
+   WORD             coopContributors[MAX_PLAYERS_IN_PARTY];
+   BOOL             fThisTurnCoop;
 #endif
 } BATTLE;
+
+PAL_C_LINKAGE_BEGIN
 
 extern BATTLE g_Battle;
 
@@ -203,11 +209,6 @@ PAL_LoadBattleSprites(
 
 VOID
 PAL_BattleMakeScene(
-   VOID
-);
-
-VOID
-PAL_BattleBackupScene(
    VOID
 );
 
@@ -232,8 +233,6 @@ PAL_StartBattle(
    BOOL        fIsBoss
 );
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
 
 #endif

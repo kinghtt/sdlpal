@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -24,7 +25,7 @@
 
 //#define INVINCIBLE 1
 
-static BOOL
+BOOL
 PAL_IsPlayerDying(
    WORD        wPlayerRole
 )
@@ -43,12 +44,48 @@ PAL_IsPlayerDying(
 
 --*/
 {
-   return gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] < gpGlobals->g.PlayerRoles.rgwMaxHP[wPlayerRole] / 5;
+   return gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] <
+      min(100, gpGlobals->g.PlayerRoles.rgwMaxHP[wPlayerRole] / 5);
+}
+
+BOOL
+PAL_IsPlayerHealthy(
+   WORD     wPlayerRole
+)
+/*++
+ Purpose:
+
+ Check if the player is healthy.
+
+ Parameters:
+
+ [IN]  wPlayerRole - the player role ID.
+
+ Return value:
+
+ TRUE if the player is healthy, FALSE if not.
+
+ --*/
+{
+   return !PAL_IsPlayerDying(wPlayerRole) &&
+           gpGlobals->rgPlayerStatus[wPlayerRole][kStatusSleep] == 0 &&
+           gpGlobals->rgPlayerStatus[wPlayerRole][kStatusConfused] == 0 &&
+           gpGlobals->rgPlayerStatus[wPlayerRole][kStatusSilence] == 0 &&
+           gpGlobals->rgPlayerStatus[wPlayerRole][kStatusParalyzed] == 0 &&
+           gpGlobals->rgPlayerStatus[wPlayerRole][kStatusPuppet] == 0;
 }
 
 INT
 PAL_BattleSelectAutoTarget(
    VOID
+)
+{
+   return PAL_BattleSelectAutoTargetFrom(0);
+}
+
+INT
+PAL_BattleSelectAutoTargetFrom(
+   INT begin
 )
 /*++
   Purpose:
@@ -57,7 +94,7 @@ PAL_BattleSelectAutoTarget(
 
   Parameters:
 
-    None.
+    [IN]  begin - the beginning target ID.
 
   Return value:
 
@@ -66,8 +103,9 @@ PAL_BattleSelectAutoTarget(
 --*/
 {
    int          i;
+   int          count;
 
-   i = (int)g_Battle.UI.wPrevEnemyTarget;
+   i = g_Battle.UI.iPrevEnemyTarget;
 
    if (i >= 0 && i <= g_Battle.wMaxEnemyIndex &&
       g_Battle.rgEnemy[i].wObjectID != 0 &&
@@ -76,13 +114,14 @@ PAL_BattleSelectAutoTarget(
       return i;
    }
 
-   for (i = 0; i <= g_Battle.wMaxEnemyIndex; i++)
+   for (count = 0, i = (begin >=0 ? begin : 0); count < MAX_ENEMIES_IN_TEAM; count++)
    {
       if (g_Battle.rgEnemy[i].wObjectID != 0 &&
          g_Battle.rgEnemy[i].e.wHealth > 0)
       {
          return i;
       }
+      i = ( i + 1 ) % MAX_ENEMIES_IN_TEAM;
    }
 
    return -1;
@@ -137,6 +176,7 @@ PAL_CalcMagicDamage(
    WORD             wDefense,
    const WORD       rgwElementalResistance[NUM_MAGIC_ELEMENTAL],
    WORD             wPoisonResistance,
+   WORD             wResistanceMultiplier,
    WORD             wMagicID
 )
 /*++
@@ -148,11 +188,13 @@ PAL_CalcMagicDamage(
 
      [IN]  wMagicStrength - magic strength of attacker.
 
-     [IN]  wDefense - defense value of inflictor.
+     [IN]  wDefense - defense value of victim.
 
-     [IN]  rgwElementalResistance - inflictor's resistance to the elemental magics.
+     [IN]  rgwElementalResistance - victim's resistance to the elemental magics.
 
-     [IN]  wPoisonResistance - inflictor's resistance to poison.
+     [IN]  wPoisonResistance - victim's resistance to poison.
+
+     [IN]  wResistanceMultiplier - multiplier of resistance value.
 
      [IN]  wMagicID - object ID of the magic.
 
@@ -184,7 +226,7 @@ PAL_CalcMagicDamage(
 
       if (wElem > NUM_MAGIC_ELEMENTAL)
       {
-         sDamage *= 10 - wPoisonResistance;
+         sDamage *= 10 - ((FLOAT)wPoisonResistance / wResistanceMultiplier);
       }
       else if (wElem == 0)
       {
@@ -192,7 +234,7 @@ PAL_CalcMagicDamage(
       }
       else
       {
-         sDamage *= 10 - rgwElementalResistance[wElem - 1];
+         sDamage *= 10 - ((FLOAT)rgwElementalResistance[wElem - 1] / wResistanceMultiplier);
       }
 
       sDamage /= 5;
@@ -326,20 +368,16 @@ PAL_GetPlayerActualDexterity(
       wDexterity *= 2;
       wDexterity /= 3;
    }
-#endif
 
    if (PAL_IsPlayerDying(wPlayerRole))
    {
       //
       // player who is low of HP should be slower
       //
-#ifdef PAL_CLASSIC
-      wDexterity /= 2;
-#else
       wDexterity *= 4;
       wDexterity /= 5;
-#endif
    }
+#endif
 
 #ifdef PAL_CLASSIC
    if (wDexterity > 999)
@@ -406,7 +444,7 @@ PAL_GetTimeChargingSpeed(
 {
    if ((g_Battle.UI.state == kBattleUISelectMove &&
       g_Battle.UI.MenuState != kBattleMenuMain) ||
-      SDL_GetTicks() < g_Battle.UI.dwMsgShowTime)
+      !SDL_TICKS_PASSED(SDL_GetTicks(), g_Battle.UI.dwMsgShowTime))
    {
       //
       // Pause the time when there are submenus or text messages
@@ -488,12 +526,7 @@ PAL_BattleDelay(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
@@ -501,25 +534,22 @@ PAL_BattleDelay(
       dwTime = SDL_GetTicks() + BATTLE_FRAME_TIME;
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
       PAL_BattleUIUpdate();
 
       if (wObjectID != 0)
       {
          if (wObjectID == BATTLE_LABEL_ESCAPEFAIL) // HACKHACK
          {
-            PAL_DrawText(PAL_GetWord(wObjectID), PAL_XY(130, 75),
-               15, TRUE, FALSE);
+            PAL_DrawText(PAL_GetWord(wObjectID), PAL_XY(130, 75), 15, TRUE, FALSE, FALSE);
          }
          else if ((SHORT)wObjectID < 0)
          {
-            PAL_DrawText(PAL_GetWord(-((SHORT)wObjectID)), PAL_XY(170, 45),
-               DESCTEXT_COLOR, TRUE, FALSE);
+            PAL_DrawText(PAL_GetWord(-((SHORT)wObjectID)), PAL_XY(170, 45), DESCTEXT_COLOR, TRUE, FALSE, FALSE);
          }
          else
          {
-            PAL_DrawText(PAL_GetWord(wObjectID), PAL_XY(210, 50),
-               15, TRUE, FALSE);
+            PAL_DrawText(PAL_GetWord(wObjectID), PAL_XY(210, 50), 15, TRUE, FALSE, FALSE);
          }
       }
 
@@ -723,7 +753,7 @@ PAL_BattlePostActionCheck(
          g_Battle.iExpGained += g_Battle.rgEnemy[i].e.wExp;
          g_Battle.iCashGained += g_Battle.rgEnemy[i].e.wCash;
 
-         SOUND_Play(g_Battle.rgEnemy[i].e.wDeathSound);
+         AUDIO_PlaySound(g_Battle.rgEnemy[i].e.wDeathSound);
          g_Battle.rgEnemy[i].wObjectID = 0;
          fFade = TRUE;
 
@@ -771,7 +801,7 @@ PAL_BattlePostActionCheck(
                   PAL_BattleDelay(10, 0, TRUE);
 
                   PAL_BattleMakeScene();
-                  SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+                  VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
                   VIDEO_UpdateScreen(NULL);
 
                   g_Battle.BattleResult = kBattleResultPause;
@@ -814,7 +844,7 @@ PAL_BattlePostActionCheck(
 
                wName = gpGlobals->g.PlayerRoles.rgwName[w];
 
-               SOUND_Play(gpGlobals->g.PlayerRoles.rgwDyingSound[w]);
+               AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwDyingSound[w]);
 
                for (j = 0; j <= gpGlobals->wMaxPartyMemberIndex; j++)
                {
@@ -834,7 +864,7 @@ PAL_BattlePostActionCheck(
                   PAL_BattleDelay(10, 0, TRUE);
 
                   PAL_BattleMakeScene();
-                  SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+                  VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
                   VIDEO_UpdateScreen(NULL);
 
                   g_Battle.BattleResult = kBattleResultPause;
@@ -855,7 +885,7 @@ PAL_BattlePostActionCheck(
 end:
    if (fFade)
    {
-      PAL_BattleBackupScene();
+      VIDEO_BackupScreen(g_Battle.lpSceneBuf);
       PAL_BattleMakeScene();
       PAL_BattleFadeScene();
    }
@@ -873,7 +903,7 @@ end:
 
       g_Battle.sBackgroundColorShift = 0;
 
-      PAL_BattleBackupScene();
+      VIDEO_BackupScreen(g_Battle.lpSceneBuf);
       PAL_BattleMakeScene();
       PAL_BattleFadeScene();
    }
@@ -908,7 +938,8 @@ PAL_BattleUpdateFighters(
    {
       wPlayerRole = gpGlobals->rgParty[i].wPlayerRole;
 
-      g_Battle.rgPlayer[i].pos = g_Battle.rgPlayer[i].posOriginal;
+      if(!g_Battle.rgPlayer[i].fDefending)
+         g_Battle.rgPlayer[i].pos = g_Battle.rgPlayer[i].posOriginal;
       g_Battle.rgPlayer[i].iColorShift = 0;
 
       if (gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] == 0)
@@ -1074,7 +1105,7 @@ PAL_BattleStartFrame(
    // Update the scene
    //
    PAL_BattleMakeScene();
-   SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+   VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
    //
    // Check if the battle is over
@@ -1085,7 +1116,7 @@ PAL_BattleStartFrame(
       // All enemies are cleared. Won the battle.
       //
       g_Battle.BattleResult = kBattleResultWon;
-      SOUND_Play(-1);
+      AUDIO_PlaySound(0);
       return;
    }
    else
@@ -1104,7 +1135,7 @@ PAL_BattleStartFrame(
          }
          else if (gpGlobals->rgPlayerStatus[wPlayerRole][kStatusPuppet] != 0)
          {
-            fEnded = FALSE;
+            fOnlyPuppet = FALSE;
          }
       }
 
@@ -1131,7 +1162,7 @@ PAL_BattleStartFrame(
 
       if (g_Battle.iHidingTime == 0)
       {
-         PAL_BattleBackupScene();
+         VIDEO_BackupScreen(g_Battle.lpSceneBuf);
          PAL_BattleMakeScene();
          PAL_BattleFadeScene();
       }
@@ -1273,7 +1304,8 @@ PAL_BattleStartFrame(
          }
          else if (gpGlobals->rgPlayerStatus[wPlayerRole][kStatusConfused] > 0)
          {
-            g_Battle.rgPlayer[i].action.ActionType = kBattleActionAttackMate;
+            g_Battle.rgPlayer[i].action.ActionType =
+               (PAL_IsPlayerDying(wPlayerRole) ? kBattleActionPass : kBattleActionAttackMate);
             g_Battle.rgPlayer[i].action.flRemainingTime = 0;
          }
          else if (gpGlobals->rgPlayerStatus[wPlayerRole][kStatusSilence] > 0 &&
@@ -1392,11 +1424,24 @@ PAL_BattleStartFrame(
          if (i > gpGlobals->wMaxPartyMemberIndex)
          {
             //
+            // Backup all actions once not repeating.
+            //
+            if (!g_Battle.fRepeat)
+            {
+               for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+               {
+                  g_Battle.rgPlayer[i].prevAction = g_Battle.rgPlayer[i].action;
+               }
+            }
+
+            //
             // actions for all players are decided. fill in the action queue.
             //
             g_Battle.fRepeat = FALSE;
             g_Battle.fForce = FALSE;
             g_Battle.fFlee = FALSE;
+            g_Battle.fPrevAutoAtk = g_Battle.UI.fAutoAttack;
+            g_Battle.fPrevPlayerAutoAtk = FALSE;
 
             g_Battle.iCurAction = 0;
 
@@ -1421,16 +1466,16 @@ PAL_BattleStartFrame(
                g_Battle.ActionQueue[j].fIsEnemy = TRUE;
                g_Battle.ActionQueue[j].wIndex = i;
                g_Battle.ActionQueue[j].wDexterity = PAL_GetEnemyDexterity(i);
-               g_Battle.ActionQueue[j].wDexterity *= RandomFloat(0.9, 1.1);
+               g_Battle.ActionQueue[j].wDexterity *= RandomFloat(0.9f, 1.1f);
 
                j++;
 
-               if (g_Battle.rgEnemy[i].e.wDualMove * 50 + RandomLong(0, 100) > 100)
+               if (g_Battle.rgEnemy[i].e.wDualMove)
                {
                   g_Battle.ActionQueue[j].fIsEnemy = TRUE;
                   g_Battle.ActionQueue[j].wIndex = i;
                   g_Battle.ActionQueue[j].wDexterity = PAL_GetEnemyDexterity(i);
-                  g_Battle.ActionQueue[j].wDexterity *= RandomFloat(0.9, 1.1);
+                  g_Battle.ActionQueue[j].wDexterity *= RandomFloat(0.9f, 1.1f);
 
                   j++;
                }
@@ -1456,6 +1501,7 @@ PAL_BattleStartFrame(
                   //
                   g_Battle.ActionQueue[j].wDexterity = 0;
                   g_Battle.rgPlayer[i].action.ActionType = kBattleActionAttack;
+                  g_Battle.rgPlayer[i].action.wActionID = 0;
                   g_Battle.rgPlayer[i].state = kFighterAct;
                }
                else
@@ -1465,6 +1511,7 @@ PAL_BattleStartFrame(
                   if (gpGlobals->rgPlayerStatus[wPlayerRole][kStatusConfused] > 0)
                   {
                      g_Battle.rgPlayer[i].action.ActionType = kBattleActionAttack;
+                     g_Battle.rgPlayer[i].action.wActionID = 0; //avoid be deduced to autoattack
                      g_Battle.rgPlayer[i].state = kFighterAct;
                   }
 
@@ -1502,7 +1549,7 @@ PAL_BattleStartFrame(
                      wDexterity /= 2;
                   }
 
-                  wDexterity *= RandomFloat(0.9, 1.1);
+                  wDexterity *= RandomFloat(0.9f, 1.1f);
 
                   g_Battle.ActionQueue[j].wDexterity = wDexterity;
                }
@@ -1544,6 +1591,10 @@ PAL_BattleStartFrame(
          for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
          {
             g_Battle.rgPlayer[i].fDefending = FALSE;
+            //
+            // Restore player pos from MANUAL defending
+            //
+            g_Battle.rgPlayer[i].pos = g_Battle.rgPlayer[i].posOriginal;
          }
 
          //
@@ -1609,7 +1660,7 @@ PAL_BattleStartFrame(
          {
             if (--g_Battle.iHidingTime == 0)
             {
-               PAL_BattleBackupScene();
+               VIDEO_BackupScreen(g_Battle.lpSceneBuf);
                PAL_BattleMakeScene();
                PAL_BattleFadeScene();
             }
@@ -1641,6 +1692,9 @@ PAL_BattleStartFrame(
          // Proceed to next turn...
          //
          g_Battle.Phase = kBattlePhaseSelectAction;
+#ifdef PAL_CLASSIC
+         g_Battle.fThisTurnCoop = FALSE;
+#endif
       }
       else
       {
@@ -1677,7 +1731,20 @@ PAL_BattleStartFrame(
             }
             else if (gpGlobals->rgPlayerStatus[wPlayerRole][kStatusConfused] > 0)
             {
-               g_Battle.rgPlayer[i].action.ActionType = kBattleActionAttackMate;
+               g_Battle.rgPlayer[i].action.ActionType =
+                  (PAL_IsPlayerDying(wPlayerRole) ? kBattleActionPass : kBattleActionAttackMate);
+            }
+            else if (g_Battle.rgPlayer[i].action.ActionType == kBattleActionAttack &&
+               g_Battle.rgPlayer[i].action.wActionID != 0)
+            {
+               g_Battle.fPrevPlayerAutoAtk = TRUE;
+            }
+            else if (g_Battle.fPrevPlayerAutoAtk)
+            {
+               g_Battle.UI.wCurPlayerIndex = i;
+               g_Battle.UI.iSelectedIndex = g_Battle.rgPlayer[i].action.sTarget;
+               g_Battle.UI.wActionType = kBattleActionAttack;
+               PAL_BattleCommitAction(FALSE);
             }
 
             //
@@ -1700,6 +1767,7 @@ PAL_BattleStartFrame(
       if (g_InputState.dwKeyPress & kKeyRepeat)
       {
          g_Battle.fRepeat = TRUE;
+         g_Battle.UI.fAutoAttack = g_Battle.fPrevAutoAtk;
       }
       else if (g_InputState.dwKeyPress & kKeyForce)
       {
@@ -1751,17 +1819,41 @@ PAL_BattleCommitAction(
 
    if (!fRepeat)
    {
+      //clear action cache first; avoid cache pollution
+      memset(&g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action,0,sizeof(g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action));
       g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.ActionType =
          g_Battle.UI.wActionType;
       g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget =
-         (SHORT)g_Battle.UI.wSelectedIndex;
-      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.wActionID =
-         g_Battle.UI.wObjectID;
+         (SHORT)g_Battle.UI.iSelectedIndex;
+
+      if (g_Battle.UI.wActionType == kBattleActionAttack)
+      {
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.wActionID =
+            (g_Battle.UI.fAutoAttack ? 1 : 0);
+      }
+      else
+      {
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.wActionID =
+            g_Battle.UI.wObjectID;
+	  }
+#ifndef PAL_CLASSIC
+      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].prevAction =
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action;
+#endif
    }
-   else if (g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.ActionType == kBattleActionPass)
+   else
    {
-      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.ActionType = kBattleActionAttack;
-      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget = -1;
+      SHORT target = g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget;
+      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action =
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].prevAction;
+      g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget = target;
+
+      if (g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.ActionType == kBattleActionPass)
+      {
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.ActionType = kBattleActionAttack;
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.wActionID = 0;
+         g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget = -1;
+      }
    }
 
    //
@@ -1789,6 +1881,7 @@ PAL_BattleCommitAction(
             {
                g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.sTarget = 0;
             }
+            g_Battle.rgPlayer[g_Battle.UI.wCurPlayerIndex].action.wActionID = 0;
          }
       }
       break;
@@ -1958,11 +2051,11 @@ PAL_BattleShowPlayerAttackAnim(
    {
       if (!fCritical)
       {
-         SOUND_Play(gpGlobals->g.PlayerRoles.rgwAttackSound[wPlayerRole]);
+         AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwAttackSound[wPlayerRole]);
       }
       else
       {
-         SOUND_Play(gpGlobals->g.PlayerRoles.rgwCriticalSound[wPlayerRole]);
+         AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwCriticalSound[wPlayerRole]);
       }
    }
 
@@ -1987,7 +2080,7 @@ PAL_BattleShowPlayerAttackAnim(
    x -= 16;
    y -= 4;
 
-   SOUND_Play(gpGlobals->g.PlayerRoles.rgwWeaponSound[wPlayerRole]);
+   AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwWeaponSound[wPlayerRole]);
 
    x = enemy_x;
    y = enemy_y - enemy_h / 3 + 10;
@@ -2001,12 +2094,7 @@ PAL_BattleShowPlayerAttackAnim(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
@@ -2039,7 +2127,7 @@ PAL_BattleShowPlayerAttackAnim(
       }
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
       PAL_RLEBlitToSurface(b, gpScreen, PAL_XY(x - PAL_RLEGetWidth(b) / 2, y - PAL_RLEGetHeight(b)));
       x -= 16;
@@ -2092,7 +2180,7 @@ PAL_BattleShowPlayerAttackAnim(
             y = PAL_Y(g_Battle.rgEnemy[j].pos);
 
             x -= dist;
-            y -= dist / 2;
+//            y -= dist / 2;
             g_Battle.rgEnemy[j].pos = PAL_XY(x, y);
          }
 
@@ -2152,7 +2240,7 @@ PAL_BattleShowPlayerUseItemAnim(
 
    g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 5;
 
-   SOUND_Play(28);
+   AUDIO_PlaySound(28);
 
    for (i = 0; i <= 6; i++)
    {
@@ -2189,19 +2277,11 @@ PAL_BattleShowPlayerUseItemAnim(
    }
 }
 
-#ifdef PAL_WIN95
-VOID
-PAL_BattleShowPlayerPreMagicAnim(
-   WORD         wPlayerIndex,
-   WORD         wObjectID
-)
-#else
 VOID
 PAL_BattleShowPlayerPreMagicAnim(
    WORD         wPlayerIndex,
    BOOL         fSummon
 )
-#endif
 /*++
   Purpose:
 
@@ -2222,13 +2302,6 @@ PAL_BattleShowPlayerPreMagicAnim(
    int   i, j;
    DWORD dwTime = SDL_GetTicks();
    WORD  wPlayerRole = gpGlobals->rgParty[wPlayerIndex].wPlayerRole;
-#ifdef PAL_WIN95
-   BOOL  fSummon = FALSE;
-   int   iMagicNum = gpGlobals->g.rgObject[wObjectID].magic.wMagicNumber;
-
-   if (gpGlobals->g.lprgMagic[iMagicNum].wType == kMagicTypeSummon)
-      fSummon = TRUE;
-#endif
 
    for (i = 0; i < 4; i++)
    {
@@ -2242,9 +2315,10 @@ PAL_BattleShowPlayerPreMagicAnim(
    PAL_BattleDelay(2, 0, TRUE);
 
    g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 5;
-#ifndef PAL_WIN95
-   SOUND_Play(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
-#endif
+   if (!gConfig.fIsWIN95)
+   {
+      AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
+   }
 
    if (!fSummon)
    {
@@ -2256,22 +2330,18 @@ PAL_BattleShowPlayerPreMagicAnim(
       index = gpGlobals->g.rgwBattleEffectIndex[PAL_GetPlayerBattleSprite(wPlayerRole)][0];
       index *= 10;
       index += 15;
-#ifdef PAL_WIN95
-      SOUND_Play(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
-#endif
-      for (i = 0; i < 10; i++)
+	  if (gConfig.fIsWIN95)
+	  {
+		  AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
+	  }
+	  for (i = 0; i < 10; i++)
       {
          LPCBITMAPRLE b = PAL_SpriteGetFrame(g_Battle.lpEffectSprite, index++);
 
          //
          // Wait for the time of one frame. Accept input here.
          //
-         PAL_ProcessEvent();
-         while (SDL_GetTicks() <= dwTime)
-         {
-            PAL_ProcessEvent();
-            SDL_Delay(1);
-         }
+		 PAL_DelayUntil(dwTime);
 
          //
          // Set the time of the next frame.
@@ -2304,7 +2374,7 @@ PAL_BattleShowPlayerPreMagicAnim(
          }
 
          PAL_BattleMakeScene();
-         SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+         VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
          PAL_RLEBlitToSurface(b, gpScreen, PAL_XY(x - PAL_RLEGetWidth(b) / 2, y - PAL_RLEGetHeight(b)));
 
@@ -2368,29 +2438,24 @@ PAL_BattleShowPlayerDefMagicAnim(
    {
       LPCBITMAPRLE b = PAL_SpriteGetFrame(lpSpriteEffect, i);
 
-      if (i == gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay)
+      if (i == (gConfig.fIsWIN95 ? 0 : gpGlobals->g.lprgMagic[iMagicNum].wFireDelay))
       {
-         SOUND_Play(gpGlobals->g.lprgMagic[iMagicNum].wSound);
+         AUDIO_PlaySound(gpGlobals->g.lprgMagic[iMagicNum].wSound);
       }
 
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
       //
       dwTime = SDL_GetTicks() +
-         ((SHORT)(gpGlobals->g.lprgMagic[iMagicNum].wSpeed) + 5) * 10;
+         (gpGlobals->g.lprgMagic[iMagicNum].wSpeed + 5) * 10;
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
       if (gpGlobals->g.lprgMagic[iMagicNum].wType == kMagicTypeApplyToParty)
       {
@@ -2487,14 +2552,6 @@ PAL_BattleShowPlayerDefMagicAnim(
    }
 }
 
-#ifndef PAL_WIN95
-static VOID
-PAL_BattleShowPlayerOffMagicAnim(
-   WORD         wPlayerIndex,
-   WORD         wObjectID,
-   SHORT        sTarget
-)
-#else
 static VOID
 PAL_BattleShowPlayerOffMagicAnim(
    WORD         wPlayerIndex,
@@ -2502,7 +2559,6 @@ PAL_BattleShowPlayerOffMagicAnim(
    SHORT        sTarget,
    BOOL         fSummon
 )
-#endif
 /*++
   Purpose:
 
@@ -2541,16 +2597,14 @@ PAL_BattleShowPlayerOffMagicAnim(
 
    n = PAL_SpriteGetNumFrames(lpSpriteEffect);
 
-#ifdef PAL_WIN95
-   if (wPlayerIndex != (WORD)-1)
+   if (gConfig.fIsWIN95 && wPlayerIndex != (WORD)-1)
    {
       g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 6;
    }
-#endif
 
    PAL_BattleDelay(1, 0, TRUE);
 
-   l = n - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
+   l = n - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
    l *= (SHORT)gpGlobals->g.lprgMagic[iMagicNum].wEffectTimes;
    l += n;
    l += gpGlobals->g.lprgMagic[iMagicNum].wShake;
@@ -2558,22 +2612,18 @@ PAL_BattleShowPlayerOffMagicAnim(
    wave = gpGlobals->wScreenWave;
    gpGlobals->wScreenWave += gpGlobals->g.lprgMagic[iMagicNum].wWave;
 
-#ifdef PAL_WIN95
-   if (!fSummon && gpGlobals->g.lprgMagic[iMagicNum].wSound != 0)
+   if (gConfig.fIsWIN95 && !fSummon && gpGlobals->g.lprgMagic[iMagicNum].wSound != 0)
    {
-      SOUND_Play(gpGlobals->g.lprgMagic[iMagicNum].wSound);
+      AUDIO_PlaySound(gpGlobals->g.lprgMagic[iMagicNum].wSound);
    }
-#endif
 
    for (i = 0; i < l; i++)
    {
       LPCBITMAPRLE b;
-#ifndef PAL_WIN95
-      if (i == gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay && wPlayerIndex != (WORD)-1)
+	  if (!gConfig.fIsWIN95 && i == gpGlobals->g.lprgMagic[iMagicNum].wFireDelay && wPlayerIndex != (WORD)-1)
       {
          g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 6;
       }
-#endif
       blow = ((g_Battle.iBlow > 0) ? RandomLong(0, g_Battle.iBlow) : RandomLong(g_Battle.iBlow, 0));
 
       for (k = 0; k <= g_Battle.wMaxEnemyIndex; k++)
@@ -2597,19 +2647,17 @@ PAL_BattleShowPlayerOffMagicAnim(
          }
          else
          {
-            k = i - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
-            k %= n - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
-            k += gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
+            k = i - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
+            k %= n - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
+            k += gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
          }
 
          b = PAL_SpriteGetFrame(lpSpriteEffect, k);
 
-#ifndef PAL_WIN95
-         if ((i - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay) % n == 0)
+		 if (!gConfig.fIsWIN95 && (i - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay) % n == 0)
          {
-            SOUND_Play(gpGlobals->g.lprgMagic[iMagicNum].wSound);
+            AUDIO_PlaySound(gpGlobals->g.lprgMagic[iMagicNum].wSound);
          }
-#endif
       }
       else
       {
@@ -2620,21 +2668,16 @@ PAL_BattleShowPlayerOffMagicAnim(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
       //
       dwTime = SDL_GetTicks() +
-         ((SHORT)(gpGlobals->g.lprgMagic[iMagicNum].wSpeed) + 5) * 10;
+         (gpGlobals->g.lprgMagic[iMagicNum].wSpeed + 5) * 10;
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
       if (gpGlobals->g.lprgMagic[iMagicNum].wType == kMagicTypeNormal)
       {
@@ -2730,6 +2773,7 @@ PAL_BattleShowPlayerOffMagicAnim(
 
 static VOID
 PAL_BattleShowEnemyMagicAnim(
+   WORD         wEnemyIndex,
    WORD         wObjectID,
    SHORT        sTarget
 )
@@ -2769,7 +2813,7 @@ PAL_BattleShowEnemyMagicAnim(
 
    n = PAL_SpriteGetNumFrames(lpSpriteEffect);
 
-   l = n - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
+   l = n - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
    l *= (SHORT)gpGlobals->g.lprgMagic[iMagicNum].wEffectTimes;
    l += n;
    l += gpGlobals->g.lprgMagic[iMagicNum].wShake;
@@ -2799,16 +2843,24 @@ PAL_BattleShowEnemyMagicAnim(
          }
          else
          {
-            k = i - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
-            k %= n - gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
-            k += gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay;
+            k = i - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
+            k %= n - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
+            k += gpGlobals->g.lprgMagic[iMagicNum].wFireDelay;
          }
 
          b = PAL_SpriteGetFrame(lpSpriteEffect, k);
 
-         if (i == gpGlobals->g.lprgMagic[iMagicNum].wSoundDelay)
+         if (i == (gConfig.fIsWIN95 ? 0 : gpGlobals->g.lprgMagic[iMagicNum].wFireDelay))
          {
-            SOUND_Play(gpGlobals->g.lprgMagic[iMagicNum].wSound);
+            AUDIO_PlaySound(gpGlobals->g.lprgMagic[iMagicNum].wSound);
+         }
+
+         if (gpGlobals->g.lprgMagic[iMagicNum].wFireDelay > 0 &&
+             i >= gpGlobals->g.lprgMagic[iMagicNum].wFireDelay &&
+             i < gpGlobals->g.lprgMagic[iMagicNum].wFireDelay + g_Battle.rgEnemy[wEnemyIndex].e.wAttackFrames)
+         {
+             g_Battle.rgEnemy[wEnemyIndex].wCurrentFrame =
+                i - gpGlobals->g.lprgMagic[iMagicNum].wFireDelay + g_Battle.rgEnemy[wEnemyIndex].e.wIdleFrames + g_Battle.rgEnemy[wEnemyIndex].e.wMagicFrames;
          }
       }
       else
@@ -2820,21 +2872,16 @@ PAL_BattleShowEnemyMagicAnim(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
       //
       dwTime = SDL_GetTicks() +
-         ((SHORT)(gpGlobals->g.lprgMagic[iMagicNum].wSpeed) + 5) * 10;
+         (gpGlobals->g.lprgMagic[iMagicNum].wSpeed + 5) * 10;
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
       if (gpGlobals->g.lprgMagic[iMagicNum].wType == kMagicTypeNormal)
       {
@@ -2967,6 +3014,14 @@ PAL_BattleShowPlayerSummonMagicAnim(
    assert(wEffectMagicID < MAX_OBJECTS);
 
    //
+   // Sound should be played before magic begins
+   //
+   if (gConfig.fIsWIN95)
+   {
+	   AUDIO_PlaySound(gpGlobals->g.lprgMagic[wMagicNum].wSound);
+   }
+
+   //
    // Brighten the players
    //
    for (i = 1; i <= 10; i++)
@@ -2979,11 +3034,7 @@ PAL_BattleShowPlayerSummonMagicAnim(
       PAL_BattleDelay(1, wObjectID, TRUE);
    }
 
-   PAL_BattleBackupScene();
-
-#ifdef PAL_WIN95
-   SOUND_Play(gpGlobals->g.lprgMagic[wMagicNum].wSound);
-#endif
+   VIDEO_BackupScreen(g_Battle.lpSceneBuf);
 
    //
    // Load the sprite of the summoned god
@@ -3015,21 +3066,16 @@ PAL_BattleShowPlayerSummonMagicAnim(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.
       //
       dwTime = SDL_GetTicks() +
-         ((SHORT)(gpGlobals->g.lprgMagic[wMagicNum].wSpeed) + 5) * 10;
+         (gpGlobals->g.lprgMagic[wMagicNum].wSpeed + 5) * 10;
 
       PAL_BattleMakeScene();
-      SDL_BlitSurface(g_Battle.lpSceneBuf, NULL, gpScreen, NULL);
+      VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
 
       PAL_BattleUIUpdate();
 
@@ -3041,11 +3087,7 @@ PAL_BattleShowPlayerSummonMagicAnim(
    //
    // Show the actual magic effect
    //
-#ifdef PAL_WIN95
    PAL_BattleShowPlayerOffMagicAnim((WORD)-1, wEffectMagicID, -1, TRUE);
-#else
-   PAL_BattleShowPlayerOffMagicAnim((WORD)-1, wEffectMagicID, -1);
-#endif
 }
 
 static VOID
@@ -3088,7 +3130,7 @@ PAL_BattleShowPostMagicAnim(
          y = PAL_Y(g_Battle.rgEnemy[j].pos);
 
          x -= dist;
-         y -= dist / 2;
+//         y -= dist / 2;
 
          g_Battle.rgEnemy[j].pos = PAL_XY(x, y);
 
@@ -3190,6 +3232,7 @@ PAL_BattlePlayerValidateAction(
          if (!fValid)
          {
             g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+            g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0;
          }
          else if (gpGlobals->g.rgObject[wObjectID].magic.wFlags & kMagicFlagApplyToAll)
          {
@@ -3197,7 +3240,7 @@ PAL_BattlePlayerValidateAction(
          }
          else if (sTarget == -1)
          {
-            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTarget();
+            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTargetFrom(g_Battle.rgPlayer[wPlayerIndex].action.sTarget);
          }
 
          fToEnemy = TRUE;
@@ -3222,29 +3265,40 @@ PAL_BattlePlayerValidateAction(
    case kBattleActionCoopMagic:
       fToEnemy = TRUE;
 
-      for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+#ifdef PAL_CLASSIC
+      {
+         int iTotalHealthy = 0;
+         for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+         {
+            w = gpGlobals->rgParty[i].wPlayerRole;
+            g_Battle.coopContributors[i] = PAL_IsPlayerHealthy(w);
+            if( g_Battle.coopContributors[i] )
+               iTotalHealthy ++;
+         }
+         if( iTotalHealthy <= 1 )
+         {
+            g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+            g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0;
+         }
+      }
+#else
+     for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
       {
          w = gpGlobals->rgParty[i].wPlayerRole;
 
-#ifdef PAL_CLASSIC
-         if (PAL_IsPlayerDying(w) ||
-            gpGlobals->rgPlayerStatus[w][kStatusSilence] > 0 ||
-            gpGlobals->rgPlayerStatus[w][kStatusSleep] > 0 ||
-            gpGlobals->rgPlayerStatus[w][kStatusParalyzed] > 0 ||
-            gpGlobals->rgPlayerStatus[w][kStatusConfused] > 0)
-#else
          if (PAL_IsPlayerDying(w) ||
             gpGlobals->rgPlayerStatus[w][kStatusSilence] > 0 ||
             gpGlobals->rgPlayerStatus[w][kStatusSleep] > 0 ||
             gpGlobals->rgPlayerStatus[w][kStatusConfused] > 0 ||
             g_Battle.rgPlayer[i].flTimeMeter < 100 ||
             (g_Battle.rgPlayer[i].state == kFighterAct && i != wPlayerIndex))
-#endif
          {
             g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+            g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0;
             break;
          }
       }
+#endif
 
       if (g_Battle.rgPlayer[wPlayerIndex].action.ActionType == kBattleActionCoopMagic)
       {
@@ -3254,7 +3308,7 @@ PAL_BattlePlayerValidateAction(
          }
          else if (sTarget == -1)
          {
-            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTarget();
+            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTargetFrom(g_Battle.rgPlayer[wPlayerIndex].action.sTarget);
          }
       }
       break;
@@ -3268,6 +3322,7 @@ PAL_BattlePlayerValidateAction(
       if (PAL_GetItemAmount(wObjectID) == 0)
       {
          g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+         g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0;
       }
       else if (gpGlobals->g.rgObject[wObjectID].item.wFlags & kItemFlagApplyToAll)
       {
@@ -3275,7 +3330,7 @@ PAL_BattlePlayerValidateAction(
       }
       else if (g_Battle.rgPlayer[wPlayerIndex].action.sTarget == -1)
       {
-         g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTarget();
+         g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTargetFrom(g_Battle.rgPlayer[wPlayerIndex].action.sTarget);
       }
       break;
 
@@ -3302,6 +3357,7 @@ PAL_BattlePlayerValidateAction(
          //
          fToEnemy = TRUE;
          g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+         g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0; //avoid be deduced to autoattack
       }
       else
       {
@@ -3317,10 +3373,11 @@ PAL_BattlePlayerValidateAction(
          if (i > gpGlobals->wMaxPartyMemberIndex)
          {
             //
-            // Attack enemies if no one else is alive
+            // DISABLE Attack enemies if no one else is alive; since original version behaviour is not same
             //
-            fToEnemy = TRUE;
-            g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionAttack;
+//            fToEnemy = TRUE;
+            g_Battle.rgPlayer[wPlayerIndex].action.ActionType = kBattleActionPass;
+            g_Battle.rgPlayer[wPlayerIndex].action.wActionID = 0;
          }
       }
       break;
@@ -3335,7 +3392,7 @@ PAL_BattlePlayerValidateAction(
       {
          if (!PAL_PlayerCanAttackAll(wPlayerRole))
          {
-            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTarget();
+            g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTargetFrom(g_Battle.rgPlayer[wPlayerIndex].action.sTarget);
          }
       }
       else if (PAL_PlayerCanAttackAll(wPlayerRole))
@@ -3348,10 +3405,76 @@ PAL_BattlePlayerValidateAction(
    {
       if (g_Battle.rgEnemy[g_Battle.rgPlayer[wPlayerIndex].action.sTarget].wObjectID == 0)
       {
-         g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTarget();
+         g_Battle.rgPlayer[wPlayerIndex].action.sTarget = PAL_BattleSelectAutoTargetFrom(g_Battle.rgPlayer[wPlayerIndex].action.sTarget);
          assert(g_Battle.rgPlayer[wPlayerIndex].action.sTarget >= 0);
       }
    }
+}
+
+static VOID
+PAL_BattleCheckHidingEffect(
+   VOID
+)
+/*++
+  Purpose:
+
+    Check if we should enter hiding state after using items or magics.
+
+  Parameters:
+
+    None.
+
+  Return value:
+
+    None.
+
+--*/
+{
+   if (g_Battle.iHidingTime < 0)
+   {
+#ifdef PAL_CLASSIC
+      g_Battle.iHidingTime = -g_Battle.iHidingTime;
+#else
+      g_Battle.iHidingTime = -g_Battle.iHidingTime * 20;
+
+      if (gpGlobals->bBattleSpeed > 1)
+      {
+         g_Battle.iHidingTime *= 1 + (gpGlobals->bBattleSpeed - 1) * 0.5;
+      }
+      else
+      {
+         g_Battle.iHidingTime *= 1.2;
+      }
+#endif
+      VIDEO_BackupScreen(g_Battle.lpSceneBuf);
+      PAL_BattleMakeScene();
+      PAL_BattleFadeScene();
+   }
+}
+
+INT
+FIGHT_DetectMagicTargetChange(
+   WORD wMagicNum,
+   INT sTarget
+)
+{
+   if(sTarget == -1 && (
+                        gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeNormal
+                        || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeApplyToPlayer
+                        || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeTrance
+                        ))
+      sTarget = 0;
+   
+   if( sTarget != -1 && (
+                         gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeAttackAll
+                         || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeAttackWhole
+                         || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeAttackField
+                         || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeApplyToParty
+                         || gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeSummon
+                         ))
+      sTarget = -1;
+
+   return sTarget;
 }
 
 VOID
@@ -3388,6 +3511,7 @@ PAL_BattlePlayerPerformAction(
    g_Battle.wMovingPlayerIndex = wPlayerIndex;
    g_Battle.iBlow = 0;
 
+   SHORT origTarget = g_Battle.rgPlayer[wPlayerIndex].action.sTarget;
    PAL_BattlePlayerValidateAction(wPlayerIndex);
    PAL_BattleBackupStat();
 
@@ -3396,6 +3520,10 @@ PAL_BattlePlayerPerformAction(
    switch (g_Battle.rgPlayer[wPlayerIndex].action.ActionType)
    {
    case kBattleActionAttack:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       if (sTarget != -1)
       {
          //
@@ -3523,6 +3651,10 @@ PAL_BattlePlayerPerformAction(
       break;
 
    case kBattleActionAttackMate:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       //
       // Check if there is someone else who is alive
       //
@@ -3568,7 +3700,7 @@ PAL_BattlePlayerPerformAction(
          PAL_BattleDelay(5, 0, TRUE);
 
          g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 9;
-         SOUND_Play(gpGlobals->g.PlayerRoles.rgwWeaponSound[wPlayerRole]);
+         AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwWeaponSound[wPlayerRole]);
 
          str = PAL_GetPlayerAttackStrength(wPlayerRole);
          def = PAL_GetPlayerDefense(gpGlobals->rgParty[sTarget].wPlayerRole);
@@ -3615,20 +3747,26 @@ PAL_BattlePlayerPerformAction(
       break;
 
    case kBattleActionCoopMagic:
+#ifdef PAL_CLASSIC
+      g_Battle.fThisTurnCoop = TRUE;
+#endif
       wObject = PAL_GetPlayerCooperativeMagic(gpGlobals->rgParty[wPlayerIndex].wPlayerRole);
       wMagicNum = gpGlobals->g.rgObject[wObject].magic.wMagicNumber;
 
+      sTarget = FIGHT_DetectMagicTargetChange(wMagicNum, sTarget);
+
       if (gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeSummon)
       {
-#ifdef PAL_WIN95
-         PAL_BattleShowPlayerPreMagicAnim(wPlayerIndex, wObject);
-#else
          PAL_BattleShowPlayerPreMagicAnim(wPlayerIndex, TRUE);
-#endif
          PAL_BattleShowPlayerSummonMagicAnim((WORD)-1, wObject);
       }
       else
       {
+         //
+         // Sound should be played before action begins
+         //
+         AUDIO_PlaySound(29);
+
          for (i = 1; i <= 6; i++)
          {
             //
@@ -3659,6 +3797,11 @@ PAL_BattlePlayerPerformAction(
 
                t++;
 
+#ifdef PAL_CLASSIC
+               if( g_Battle.coopContributors[j] == FALSE )
+                  continue;
+#endif
+
                x = PAL_X(g_Battle.rgPlayer[j].posOriginal) * (6 - i);
                y = PAL_Y(g_Battle.rgPlayer[j].posOriginal) * (6 - i);
 
@@ -3680,6 +3823,10 @@ PAL_BattlePlayerPerformAction(
             {
                continue;
             }
+#ifdef PAL_CLASSIC
+            if( g_Battle.coopContributors[i] == FALSE )
+               continue;
+#endif
 
             g_Battle.rgPlayer[i].wCurrentFrame = 5;
 
@@ -3688,22 +3835,22 @@ PAL_BattlePlayerPerformAction(
 
          g_Battle.rgPlayer[wPlayerIndex].iColorShift = 6;
          g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 5;
-         SOUND_Play(157);
          PAL_BattleDelay(5, 0, TRUE);
 
          g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 6;
          g_Battle.rgPlayer[wPlayerIndex].iColorShift = 0;
          PAL_BattleDelay(3, 0, TRUE);
 
-#ifdef PAL_WIN95
          PAL_BattleShowPlayerOffMagicAnim((WORD)-1, wObject, sTarget, FALSE);
-#else
-         PAL_BattleShowPlayerOffMagicAnim((WORD)-1, wObject, sTarget);
-#endif
       }
 
       for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
       {
+#ifdef PAL_CLASSIC
+         if( g_Battle.coopContributors[i] == FALSE )
+            continue;
+#endif
+
          gpGlobals->g.PlayerRoles.rgwHP[gpGlobals->rgParty[i].wPlayerRole] -=
             gpGlobals->g.lprgMagic[wMagicNum].wCostMP;
 
@@ -3729,6 +3876,11 @@ PAL_BattlePlayerPerformAction(
 
       for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
       {
+#ifdef PAL_CLASSIC
+         if( g_Battle.coopContributors[i] == FALSE )
+            continue;
+#endif
+
          str += PAL_GetPlayerAttackStrength(gpGlobals->rgParty[i].wPlayerRole);
          str += PAL_GetPlayerMagicStrength(gpGlobals->rgParty[i].wPlayerRole);
       }
@@ -3754,7 +3906,7 @@ PAL_BattlePlayerPerformAction(
             def += (g_Battle.rgEnemy[i].e.wLevel + 6) * 4;
 
             sDamage = PAL_CalcMagicDamage(str, def,
-               g_Battle.rgEnemy[i].e.wElemResistance, g_Battle.rgEnemy[i].e.wPoisonResistance, wObject);
+               g_Battle.rgEnemy[i].e.wElemResistance, g_Battle.rgEnemy[i].e.wPoisonResistance, 1, wObject);
 
             if (sDamage <= 0)
             {
@@ -3773,7 +3925,7 @@ PAL_BattlePlayerPerformAction(
          def += (g_Battle.rgEnemy[sTarget].e.wLevel + 6) * 4;
 
          sDamage = PAL_CalcMagicDamage(str, def,
-            g_Battle.rgEnemy[sTarget].e.wElemResistance, g_Battle.rgEnemy[sTarget].e.wPoisonResistance, wObject);
+            g_Battle.rgEnemy[sTarget].e.wElemResistance, g_Battle.rgEnemy[sTarget].e.wPoisonResistance, 1,  wObject);
 
          if (sDamage <= 0)
          {
@@ -3817,6 +3969,11 @@ PAL_BattlePlayerPerformAction(
 
             for (j = 0; j <= gpGlobals->wMaxPartyMemberIndex; j++)
             {
+#ifdef PAL_CLASSIC
+               if( g_Battle.coopContributors[j] == FALSE )
+                  continue;
+#endif
+
                g_Battle.rgPlayer[j].wCurrentFrame = 0;
 
                if ((WORD)j == wPlayerIndex)
@@ -3844,11 +4001,19 @@ PAL_BattlePlayerPerformAction(
       break;
 
    case kBattleActionDefend:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       g_Battle.rgPlayer[wPlayerIndex].fDefending = TRUE;
       gpGlobals->Exp.rgDefenseExp[wPlayerRole].wCount += 2;
       break;
 
    case kBattleActionFlee:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       str = PAL_GetPlayerFleeRate(wPlayerRole);
       def = 0;
 
@@ -3859,8 +4024,8 @@ PAL_BattlePlayerPerformAction(
             continue;
          }
 
-         def += (SHORT)(g_Battle.rgEnemy[i].e.wFleeRate);
-         def += (g_Battle.rgEnemy[i].e.wLevel + 6) * 2;
+         def += (SHORT)(g_Battle.rgEnemy[i].e.wDexterity);
+         def += (g_Battle.rgEnemy[i].e.wLevel + 6) * 4;
       }
 
       if ((SHORT)def < 0)
@@ -3868,7 +4033,7 @@ PAL_BattlePlayerPerformAction(
          def = 0;
       }
 
-      if (RandomLong(0, str) >= RandomLong(0, def) && !g_Battle.fIsBoss)
+      if (str >= RandomLong(0, def) && !g_Battle.fIsBoss)
       {
          //
          // Successful escape
@@ -3900,15 +4065,17 @@ PAL_BattlePlayerPerformAction(
       break;
 
    case kBattleActionMagic:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       wObject = g_Battle.rgPlayer[wPlayerIndex].action.wActionID;
       wMagicNum = gpGlobals->g.rgObject[wObject].magic.wMagicNumber;
 
-#ifdef PAL_WIN95
-      PAL_BattleShowPlayerPreMagicAnim(wPlayerIndex, wObject);
-#else
+      sTarget = FIGHT_DetectMagicTargetChange(wMagicNum, sTarget);
+
       PAL_BattleShowPlayerPreMagicAnim(wPlayerIndex,
          (gpGlobals->g.lprgMagic[wMagicNum].wType == kMagicTypeSummon));
-#endif
 
       if (!gpGlobals->fAutoBattle)
       {
@@ -3957,7 +4124,7 @@ PAL_BattlePlayerPerformAction(
                      PAL_BattleDelay(1, 0, TRUE);
                   }
 
-                  PAL_BattleBackupScene();
+                  VIDEO_BackupScreen(g_Battle.lpSceneBuf);
                   PAL_LoadBattleSprites();
 
                   g_Battle.rgPlayer[wPlayerIndex].iColorShift = 0;
@@ -3984,11 +4151,7 @@ PAL_BattlePlayerPerformAction(
             }
             else
             {
-#ifdef PAL_WIN95
                PAL_BattleShowPlayerOffMagicAnim(wPlayerIndex, wObject, sTarget, FALSE);
-#else
-               PAL_BattleShowPlayerOffMagicAnim(wPlayerIndex, wObject, sTarget);
-#endif
             }
 
             gpGlobals->g.rgObject[wObject].magic.wScriptOnSuccess =
@@ -4016,7 +4179,7 @@ PAL_BattlePlayerPerformAction(
                      def += (g_Battle.rgEnemy[i].e.wLevel + 6) * 4;
 
                      sDamage = PAL_CalcMagicDamage(str, def,
-                        g_Battle.rgEnemy[i].e.wElemResistance, g_Battle.rgEnemy[i].e.wPoisonResistance, wObject);
+                        g_Battle.rgEnemy[i].e.wElemResistance, g_Battle.rgEnemy[i].e.wPoisonResistance, 1, wObject);
 
                      if (sDamage <= 0)
                      {
@@ -4036,7 +4199,7 @@ PAL_BattlePlayerPerformAction(
                   def += (g_Battle.rgEnemy[sTarget].e.wLevel + 6) * 4;
 
                   sDamage = PAL_CalcMagicDamage(str, def,
-                     g_Battle.rgEnemy[sTarget].e.wElemResistance, g_Battle.rgEnemy[sTarget].e.wPoisonResistance, wObject);
+                     g_Battle.rgEnemy[sTarget].e.wElemResistance, g_Battle.rgEnemy[sTarget].e.wPoisonResistance, 1, wObject);
 
                   if (sDamage <= 0)
                   {
@@ -4053,11 +4216,17 @@ PAL_BattlePlayerPerformAction(
       PAL_BattleShowPostMagicAnim();
       PAL_BattleDelay(5, 0, TRUE);
 
+      PAL_BattleCheckHidingEffect();
+
       gpGlobals->Exp.rgMagicExp[wPlayerRole].wCount += RandomLong(2, 3);
       gpGlobals->Exp.rgMagicPowerExp[wPlayerRole].wCount++;
       break;
 
    case kBattleActionThrowItem:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       wObject = g_Battle.rgPlayer[wPlayerIndex].action.wActionID;
 
       for (i = 0; i < 4; i++)
@@ -4072,7 +4241,7 @@ PAL_BattlePlayerPerformAction(
       PAL_BattleDelay(2, wObject, TRUE);
 
       g_Battle.rgPlayer[wPlayerIndex].wCurrentFrame = 5;
-      SOUND_Play(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
+      AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwMagicSound[wPlayerRole]);
 
       PAL_BattleDelay(8, wObject, TRUE);
 
@@ -4095,9 +4264,15 @@ PAL_BattlePlayerPerformAction(
       PAL_BattleUpdateFighters();
       PAL_BattleDelay(4, 0, TRUE);
 
+      PAL_BattleCheckHidingEffect();
+
       break;
 
    case kBattleActionUseItem:
+#ifdef PAL_CLASSIC
+      if(g_Battle.fThisTurnCoop)
+         break;
+#endif
       wObject = g_Battle.rgPlayer[wPlayerIndex].action.wActionID;
 
       PAL_BattleShowPlayerUseItemAnim(wPlayerIndex, wObject, sTarget);
@@ -4117,26 +4292,7 @@ PAL_BattlePlayerPerformAction(
          PAL_AddItemToInventory(wObject, -1);
       }
 
-      if (g_Battle.iHidingTime < 0)
-      {
-#ifdef PAL_CLASSIC
-         g_Battle.iHidingTime = -g_Battle.iHidingTime;
-#else
-         g_Battle.iHidingTime = -g_Battle.iHidingTime * 20;
-
-         if (gpGlobals->bBattleSpeed > 1)
-         {
-            g_Battle.iHidingTime *= 1 + (gpGlobals->bBattleSpeed - 1) * 0.5;
-         }
-         else
-         {
-            g_Battle.iHidingTime *= 1.2;
-         }
-#endif
-         PAL_BattleBackupScene();
-         PAL_BattleMakeScene();
-         PAL_BattleFadeScene();
-      }
+      PAL_BattleCheckHidingEffect();
 
       PAL_BattleUpdateFighters();
       PAL_BattleDisplayStatChange();
@@ -4154,6 +4310,11 @@ PAL_BattlePlayerPerformAction(
    g_Battle.rgPlayer[wPlayerIndex].flTimeMeter = 0;
 
    PAL_BattlePostActionCheck(FALSE);
+   
+   //
+   // Revert target slot of this player 
+   //
+   g_Battle.rgPlayer[wPlayerIndex].action.sTarget = origTarget;
 
 #ifndef PAL_CLASSIC
    //
@@ -4215,6 +4376,37 @@ PAL_BattlePlayerPerformAction(
       }
    }
 #endif
+}
+
+static INT
+PAL_BattleEnemySelectEnemyTargetIndex(
+   VOID
+)
+/*++
+ Purpose:
+
+ Select a attackable enemy randomly.
+
+ Parameters:
+
+ None.
+
+ Return value:
+
+ None.
+
+ --*/
+{
+   int i;
+
+   i = RandomLong(0, g_Battle.wMaxEnemyIndex);
+
+   while (g_Battle.rgEnemy[i].wObjectID == 0 || g_Battle.rgEnemy[i].e.wHealth == 0)
+   {
+      i = RandomLong(0, g_Battle.wMaxEnemyIndex);
+   }
+
+   return i;
 }
 
 static INT
@@ -4291,7 +4483,68 @@ PAL_BattleEnemyPerformAction(
    }
    else if (g_Battle.rgEnemy[wEnemyIndex].rgwStatus[kStatusConfused] > 0)
    {
-      // TODO
+      INT  iTarget = PAL_BattleEnemySelectEnemyTargetIndex();
+      if( iTarget == wEnemyIndex )
+         goto end;
+      INT  iX = PAL_X(g_Battle.rgEnemy[iTarget].pos);
+      INT  iY = PAL_Y(g_Battle.rgEnemy[iTarget].pos);
+      for (i = 0; i < 3; i++)
+      {
+         x = PAL_X(g_Battle.rgEnemy[wEnemyIndex].pos);
+         y = PAL_Y(g_Battle.rgEnemy[wEnemyIndex].pos);
+
+         x += iX;
+         y += iY;
+
+         x /= 2;
+         y /= 2;
+
+         g_Battle.rgEnemy[wEnemyIndex].pos = PAL_XY(x, y);
+
+         PAL_BattleDelay(1, 0, TRUE);
+      }
+
+      DWORD dwTime = SDL_GetTicks() + BATTLE_FRAME_TIME;
+      x = (PAL_X(g_Battle.rgEnemy[wEnemyIndex].pos)+PAL_X(g_Battle.rgEnemy[iTarget].pos))/2;
+      y = PAL_Y(g_Battle.rgEnemy[iTarget].pos)-PAL_RLEGetHeight(PAL_SpriteGetFrame(g_Battle.rgEnemy[iTarget].lpSprite,0))/3+10;
+      for( i=9; i<12; i++ )
+      {
+         LPCBITMAPRLE b = PAL_SpriteGetFrame(g_Battle.lpEffectSprite, i);
+
+         PAL_DelayUntil(dwTime);
+         dwTime = SDL_GetTicks() + BATTLE_FRAME_TIME;
+
+         PAL_BattleMakeScene();
+         VIDEO_CopyEntireSurface(g_Battle.lpSceneBuf, gpScreen);
+
+         PAL_RLEBlitToSurface(b, gpScreen, PAL_XY(x - PAL_RLEGetWidth(b) / 2, y - PAL_RLEGetHeight(b)));
+
+         PAL_BattleUIUpdate();
+
+         VIDEO_UpdateScreen(NULL);
+      }
+
+      int str = (SHORT)g_Battle.rgEnemy[wEnemyIndex].e.wAttackStrength;
+      str += (g_Battle.rgEnemy[wEnemyIndex].e.wLevel + 6) * 6;
+      int def = (SHORT)g_Battle.rgEnemy[iTarget].e.wDefense;
+      def += (g_Battle.rgEnemy[iTarget].e.wLevel + 6) * 4;
+      sDamage = PAL_CalcBaseDamage(str, def)*2/g_Battle.rgEnemy[iTarget].e.wPhysicalResistance;
+
+      if (sDamage <= 0)
+      {
+         sDamage = 1;
+      }
+
+      g_Battle.rgEnemy[iTarget].e.wHealth -= sDamage;
+
+      PAL_BattleDisplayStatChange();
+      PAL_BattleShowPostMagicAnim();
+      PAL_BattleDelay(5, 0, TRUE);
+
+      g_Battle.rgEnemy[wEnemyIndex].pos = g_Battle.rgEnemy[wEnemyIndex].posOriginal;
+      PAL_BattleDelay(2, 0, TRUE);
+
+      PAL_BattlePostActionCheck(FALSE);
    }
    else if (wMagic != 0 &&
       RandomLong(0, 9) < g_Battle.rgEnemy[wEnemyIndex].e.wMagicRate &&
@@ -4332,7 +4585,7 @@ PAL_BattleEnemyPerformAction(
       g_Battle.rgEnemy[wEnemyIndex].pos = PAL_XY(ex, ey);
       PAL_BattleDelay(1, 0, FALSE);
 
-      SOUND_Play(g_Battle.rgEnemy[wEnemyIndex].e.wMagicSound);
+      AUDIO_PlaySound(g_Battle.rgEnemy[wEnemyIndex].e.wMagicSound);
 
       for (i = 0; i < g_Battle.rgEnemy[wEnemyIndex].e.wMagicFrames; i++)
       {
@@ -4346,7 +4599,7 @@ PAL_BattleEnemyPerformAction(
          PAL_BattleDelay(1, 0, FALSE);
       }
 
-      if (gpGlobals->g.lprgMagic[wMagicNum].wSoundDelay == 0)
+      if (gpGlobals->g.lprgMagic[wMagicNum].wFireDelay == 0)
       {
          for (i = 0; i <= g_Battle.rgEnemy[wEnemyIndex].e.wAttackFrames; i++)
          {
@@ -4403,7 +4656,7 @@ PAL_BattleEnemyPerformAction(
 
       if (g_fScriptSuccess)
       {
-         PAL_BattleShowEnemyMagicAnim(wMagic, sTarget);
+         PAL_BattleShowEnemyMagicAnim(wEnemyIndex, wMagic, sTarget);
 
          gpGlobals->g.rgObject[wMagic].magic.wScriptOnSuccess =
             PAL_RunTriggerScript(gpGlobals->g.rgObject[wMagic].magic.wScriptOnSuccess, wPlayerRole);
@@ -4432,11 +4685,11 @@ PAL_BattleEnemyPerformAction(
                for (x = 0; x < NUM_MAGIC_ELEMENTAL; x++)
                {
                   rgwElementalResistance[x] =
-                     5 + PAL_GetPlayerElementalResistance(w, x) / 20;
+                     100 + PAL_GetPlayerElementalResistance(w, x);
                }
 
                sDamage = PAL_CalcMagicDamage(str, def, rgwElementalResistance,
-                  5 + PAL_GetPlayerPoisonResistance(w) / 20, wMagic);
+                  100 + PAL_GetPlayerPoisonResistance(w), 20, wMagic);
 
                sDamage /= ((g_Battle.rgPlayer[i].fDefending ? 2 : 1) *
                   ((gpGlobals->rgPlayerStatus[w][kStatusProtect] > 0) ? 2 : 1)) +
@@ -4453,7 +4706,7 @@ PAL_BattleEnemyPerformAction(
 
                if (gpGlobals->g.PlayerRoles.rgwHP[w] == 0)
                {
-                  SOUND_Play(gpGlobals->g.PlayerRoles.rgwDeathSound[w]);
+                  AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwDeathSound[w]);
                }
             }
          }
@@ -4467,11 +4720,11 @@ PAL_BattleEnemyPerformAction(
             for (x = 0; x < NUM_MAGIC_ELEMENTAL; x++)
             {
                rgwElementalResistance[x] =
-                  5 + PAL_GetPlayerElementalResistance(wPlayerRole, x) / 20;
+                  100 + PAL_GetPlayerElementalResistance(wPlayerRole, x);
             }
 
             sDamage = PAL_CalcMagicDamage(str, def, rgwElementalResistance,
-               5 + PAL_GetPlayerPoisonResistance(wPlayerRole) / 20, wMagic);
+               100 + PAL_GetPlayerPoisonResistance(wPlayerRole), 20, wMagic);
 
             sDamage /= ((g_Battle.rgPlayer[sTarget].fDefending ? 2 : 1) *
                ((gpGlobals->rgPlayerStatus[wPlayerRole][kStatusProtect] > 0) ? 2 : 1)) +
@@ -4488,7 +4741,7 @@ PAL_BattleEnemyPerformAction(
 
             if (gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] == 0)
             {
-               SOUND_Play(gpGlobals->g.PlayerRoles.rgwDeathSound[wPlayerRole]);
+               AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwDeathSound[wPlayerRole]);
             }
          }
       }
@@ -4568,7 +4821,7 @@ PAL_BattleEnemyPerformAction(
          def *= 2;
       }
 
-      SOUND_Play(g_Battle.rgEnemy[wEnemyIndex].e.wAttackSound);
+      AUDIO_PlaySound(g_Battle.rgEnemy[wEnemyIndex].e.wAttackSound);
 
       iCoverIndex = -1;
 
@@ -4635,8 +4888,10 @@ PAL_BattleEnemyPerformAction(
          g_Battle.rgEnemy[wEnemyIndex].pos = PAL_XY(x, y);
          PAL_BattleDelay(1, 0, FALSE);
       }
-
-      SOUND_Play(g_Battle.rgEnemy[wEnemyIndex].e.wActionSound);
+	  if (!gConfig.fIsWIN95 || g_Battle.rgEnemy[wEnemyIndex].e.wActionSound != 0)
+      {
+         AUDIO_PlaySound(g_Battle.rgEnemy[wEnemyIndex].e.wActionSound);
+      }
       PAL_BattleDelay(1, 0, FALSE);
 
       ex = PAL_X(g_Battle.rgPlayer[sTarget].pos) - 44;
@@ -4714,8 +4969,10 @@ PAL_BattleEnemyPerformAction(
 
          g_Battle.rgPlayer[sTarget].iColorShift = 6;
       }
-
-      SOUND_Play(iSound);
+	  if (!gConfig.fIsWIN95 || iSound != 0)
+      {
+         AUDIO_PlaySound(iSound);
+      }
       PAL_BattleDelay(1, 0, FALSE);
 
       g_Battle.rgPlayer[sTarget].iColorShift = 0;
@@ -4740,7 +4997,7 @@ PAL_BattleEnemyPerformAction(
 
       if (gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] == 0)
       {
-         SOUND_Play(gpGlobals->g.PlayerRoles.rgwDeathSound[wPlayerRole]);
+         AUDIO_PlaySound(gpGlobals->g.PlayerRoles.rgwDeathSound[wPlayerRole]);
          wFrameBak = 2;
       }
       else if (PAL_IsPlayerDying(wPlayerRole))
@@ -4765,13 +5022,13 @@ PAL_BattleEnemyPerformAction(
       g_Battle.rgPlayer[sTarget].wCurrentFrame = wFrameBak;
       PAL_BattleDelay(1, 0, TRUE);
 
-      g_Battle.rgPlayer[sTarget].pos = g_Battle.rgPlayer[sTarget].posOriginal;
       PAL_BattleDelay(4, 0, TRUE);
 
       PAL_BattleUpdateFighters();
 
       if (iCoverIndex == -1 && !fAutoDefend &&
-         g_Battle.rgEnemy[wEnemyIndex].e.wAttackEquivItemRate >= RandomLong(1, 10))
+         g_Battle.rgEnemy[wEnemyIndex].e.wAttackEquivItemRate >= RandomLong(1, 10) &&
+		 PAL_GetPlayerPoisonResistance(wPlayerRole) < RandomLong(1, 100) )
       {
          i = g_Battle.rgEnemy[wEnemyIndex].e.wAttackEquivItem;
          gpGlobals->g.rgObject[i].item.wScriptOnUse =
@@ -4846,7 +5103,7 @@ PAL_BattleStealFromEnemy(
 {
    int   iPlayerIndex = g_Battle.wMovingPlayerIndex;
    int   offset, x, y, i;
-   char  s[256] = "";
+   WCHAR s[256] = L"";
 
    g_Battle.rgPlayer[iPlayerIndex].wCurrentFrame = 10;
    offset = ((INT)wTarget - iPlayerIndex) * 8;
@@ -4897,11 +5154,11 @@ PAL_BattleStealFromEnemy(
 
          if (c > 0)
          {
-            strcpy(s, PAL_GetWord(34));
-            strcat(s, " ");
-            strcat(s, va("%d", c));
-            strcat(s, " ");
-            strcat(s, PAL_GetWord(10));
+#ifdef PAL_CLASSIC
+            PAL_swprintf(s, sizeof(s) / sizeof(WCHAR), L"@%ls @%d @%ls@", PAL_GetWord(34), c, PAL_GetWord(10));
+#else
+            PAL_swprintf(s, sizeof(s) / sizeof(WCHAR), L"%ls %d %ls", PAL_GetWord(34), c, PAL_GetWord(10));
+#endif
          }
       }
       else
@@ -4911,10 +5168,12 @@ PAL_BattleStealFromEnemy(
          //
          g_Battle.rgEnemy[wTarget].e.nStealItem--;
          PAL_AddItemToInventory(g_Battle.rgEnemy[wTarget].e.wStealItem, 1);
-
-         strcpy(s, PAL_GetWord(34));
-         strcat(s, PAL_GetWord(g_Battle.rgEnemy[wTarget].e.wStealItem));
-      }
+#ifdef PAL_CLASSIC
+         PAL_swprintf(s, sizeof(s) / sizeof(WCHAR), L"%ls@%ls@", PAL_GetWord(34), PAL_GetWord(g_Battle.rgEnemy[wTarget].e.wStealItem));
+#else
+         PAL_swprintf(s, sizeof(s) / sizeof(WCHAR), L"%ls %ls", PAL_GetWord(34), PAL_GetWord(g_Battle.rgEnemy[wTarget].e.wStealItem));
+#endif
+	  }
 
       if (s[0] != '\0')
       {
@@ -4962,17 +5221,13 @@ PAL_BattleSimulateMagic(
    }
    else if (sTarget == -1)
    {
-      sTarget = PAL_BattleSelectAutoTarget();
+      sTarget = PAL_BattleSelectAutoTargetFrom(sTarget);
    }
 
    //
    // Show the magic animation
    //
-#ifdef PAL_WIN95
    PAL_BattleShowPlayerOffMagicAnim(0xFFFF, wMagicObjectID, sTarget, FALSE);
-#else
-   PAL_BattleShowPlayerOffMagicAnim(0xFFFF, wMagicObjectID, sTarget);
-#endif
 
    if (gpGlobals->g.lprgMagic[gpGlobals->g.rgObject[wMagicObjectID].magic.wMagicNumber].wBaseDamage > 0 ||
       wBaseDamage > 0)
@@ -4998,7 +5253,7 @@ PAL_BattleSimulateMagic(
             }
 
             sDamage = PAL_CalcMagicDamage(wBaseDamage, (WORD)def, g_Battle.rgEnemy[i].e.wElemResistance,
-               g_Battle.rgEnemy[i].e.wPoisonResistance, wMagicObjectID);
+               g_Battle.rgEnemy[i].e.wPoisonResistance, 1, wMagicObjectID);
 
             if (sDamage < 0)
             {
@@ -5022,7 +5277,7 @@ PAL_BattleSimulateMagic(
          }
 
          sDamage = PAL_CalcMagicDamage(wBaseDamage, (WORD)def, g_Battle.rgEnemy[sTarget].e.wElemResistance,
-            g_Battle.rgEnemy[sTarget].e.wPoisonResistance, wMagicObjectID);
+            g_Battle.rgEnemy[sTarget].e.wPoisonResistance, 1, wMagicObjectID);
 
          if (sDamage < 0)
          {

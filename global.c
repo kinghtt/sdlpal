@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -20,20 +21,135 @@
 //
 
 #include "main.h"
+#include "resampler.h"
+#include "palcfg.h"
 
-LPGLOBALVARS gpGlobals = NULL;
+static GLOBALVARS _gGlobals;
+GLOBALVARS * const  gpGlobals = &_gGlobals;
 
+CONFIGURATION gConfig;
+
+#if SDL_BYTEORDER == SDL_LIL_ENDIAN
+#define DO_BYTESWAP(buf, size)
+#else
 #define DO_BYTESWAP(buf, size)                                   \
-   for (i = 0; i < (size) / 2; i++)                              \
-   {                                                             \
-      ((LPWORD)(buf))[i] = SWAP16(((LPWORD)(buf))[i]);           \
-   }
+   do {                                                          \
+      int i;                                                     \
+      for (i = 0; i < (size) / 2; i++)                           \
+      {                                                          \
+         ((LPWORD)(buf))[i] = SDL_SwapLE16(((LPWORD)(buf))[i]);  \
+      }                                                          \
+   } while(0)
+#endif
 
 #define LOAD_DATA(buf, size, chunknum, fp)                       \
-   {                                                             \
+   do {                                                          \
       PAL_MKFReadChunk((LPBYTE)(buf), (size), (chunknum), (fp)); \
       DO_BYTESWAP(buf, size);                                    \
-   }
+   } while(0)
+
+BOOL
+PAL_IsWINVersion(
+	BOOL *pfIsWIN95
+)
+{
+	FILE *fps[] = { UTIL_OpenRequiredFile("abc.mkf"), UTIL_OpenRequiredFile("map.mkf"), gpGlobals->f.fpF, gpGlobals->f.fpFBP, gpGlobals->f.fpFIRE, gpGlobals->f.fpMGO };
+	uint8_t *data = NULL;
+	int data_size = 0, dos_score = 0, win_score = 0;
+	BOOL result = FALSE;
+
+	for (int i = 0; i < sizeof(fps) / sizeof(FILE *); i++)
+	{
+		//
+		// Find the first non-empty sub-file
+		//
+		int count = PAL_MKFGetChunkCount(fps[i]), j = 0, size;
+		while (j < count && (size = PAL_MKFGetChunkSize(j, fps[i])) < 4) j++;
+		if (j >= count) goto PAL_IsWINVersion_Exit;
+
+		//
+		// Read the content and check the compression signature
+		// Note that this check is not 100% correct, however in incorrect situations,
+		// the sub-file will be over 784MB if uncompressed, which is highly unlikely.
+		//
+		if (data_size < size) data = (uint8_t *)realloc(data, data_size = size);
+		PAL_MKFReadChunk(data, data_size, j, fps[i]);
+		if (data[0] == 'Y' && data[1] == 'J' && data[2] == '_' && data[3] == '1')
+		{
+			if (win_score > 0)
+				goto PAL_IsWINVersion_Exit;
+			else
+				dos_score++;
+		}
+		else
+		{
+			if (dos_score > 0)
+				goto PAL_IsWINVersion_Exit;
+			else
+				win_score++;
+		}
+	}
+
+	//
+	// Finally check the size of object definition
+	//
+	data_size = PAL_MKFGetChunkSize(2, gpGlobals->f.fpSSS);
+	if (data_size % sizeof(OBJECT) == 0 && data_size % sizeof(OBJECT_DOS) != 0 && dos_score > 0) goto PAL_IsWINVersion_Exit;
+	if (data_size % sizeof(OBJECT_DOS) == 0 && data_size % sizeof(OBJECT) != 0 && win_score > 0) goto PAL_IsWINVersion_Exit;
+
+	if (pfIsWIN95) *pfIsWIN95 = (win_score == sizeof(fps) / sizeof(FILE *)) ? TRUE : FALSE;
+
+	result = TRUE;
+
+PAL_IsWINVersion_Exit:
+	free(data);
+	fclose(fps[1]);
+	fclose(fps[0]);
+
+	return result;
+}
+
+CODEPAGE
+PAL_DetectCodePage(
+	const char *   filename
+)
+{
+	FILE *fp;
+	char *word_buf = NULL;
+	long word_len = 0;
+	CODEPAGE cp = CP_BIG5;
+
+	if (NULL != (fp = UTIL_OpenFile(filename)))
+	{
+		fseek(fp, 0, SEEK_END);
+		word_len = ftell(fp);
+		word_buf = (char *)malloc(word_len);
+		fseek(fp, 0, SEEK_SET);
+		word_len = fread(word_buf, 1, word_len, fp);
+		UTIL_CloseFile(fp);
+		// Eliminates null characters so that PAL_MultiByteToWideCharCP works properly
+		for (char *ptr = word_buf; ptr < word_buf + word_len; ptr++)
+		{
+			if (!*ptr)
+				*ptr = ' ';
+		}
+	}
+
+	if (word_buf)
+	{
+		int probability;
+		cp = PAL_DetectCodePageForString(word_buf, (int)word_len, cp, &probability);
+
+		free(word_buf);
+
+		if (probability == 100)
+			UTIL_LogOutput(LOGLEVEL_INFO, "PAL_DetectCodePage detected code page '%s' for %s\n", cp ? "GBK" : "BIG5", filename);
+		else
+			UTIL_LogOutput(LOGLEVEL_WARNING, "PAL_DetectCodePage detected the most possible (%d) code page '%s' for %s\n", probability, cp ? "GBK" : "BIG5", filename);
+	}
+
+	return cp;
+}
 
 INT
 PAL_InitGlobals(
@@ -54,15 +170,6 @@ PAL_InitGlobals(
 
 --*/
 {
-   if (gpGlobals == NULL)
-   {
-      gpGlobals = (LPGLOBALVARS)calloc(1, sizeof(GLOBALVARS));
-      if (gpGlobals == NULL)
-      {
-         return -1;
-      }
-   }
-
    //
    // Open files
    //
@@ -74,9 +181,28 @@ PAL_InitGlobals(
    gpGlobals->f.fpFIRE = UTIL_OpenRequiredFile("fire.mkf");
    gpGlobals->f.fpRGM = UTIL_OpenRequiredFile("rgm.mkf");
    gpGlobals->f.fpSSS = UTIL_OpenRequiredFile("sss.mkf");
-#ifndef PAL_WIN95
-   gpGlobals->lpObjectDesc = PAL_LoadObjectDesc(va("%s%s", PAL_PREFIX, "desc.dat"));
-#endif
+
+   //
+   // Retrieve game resource version
+   //
+   if (!PAL_IsWINVersion(&gConfig.fIsWIN95)) return -1;
+
+   //
+   // Enable AVI playing only when the resource is WIN95
+   //
+   gConfig.fEnableAviPlay = gConfig.fEnableAviPlay && gConfig.fIsWIN95;
+
+   //
+   // Detect game language only when no message file specified
+   //
+   if (!gConfig.pszMsgFile) PAL_SetCodePage(PAL_DetectCodePage("word.dat"));
+
+   //
+   // Set decompress function
+   //
+   Decompress = gConfig.fIsWIN95 ? YJ2_Decompress : YJ1_Decompress;
+
+   gpGlobals->lpObjectDesc = gConfig.fIsWIN95 ? NULL : PAL_LoadObjectDesc("desc.dat");
    gpGlobals->bCurrentSaveSlot = 1;
 
    return 0;
@@ -101,45 +227,42 @@ PAL_FreeGlobals(
 
 --*/
 {
-   if (gpGlobals != NULL)
-   {
-      //
-      // Close all opened files
-      //
-      UTIL_CloseFile(gpGlobals->f.fpFBP);
-      UTIL_CloseFile(gpGlobals->f.fpMGO);
-      UTIL_CloseFile(gpGlobals->f.fpBALL);
-      UTIL_CloseFile(gpGlobals->f.fpDATA);
-      UTIL_CloseFile(gpGlobals->f.fpF);
-      UTIL_CloseFile(gpGlobals->f.fpFIRE);
-      UTIL_CloseFile(gpGlobals->f.fpRGM);
-      UTIL_CloseFile(gpGlobals->f.fpSSS);
+   //
+   // Close all opened files
+   //
+   UTIL_CloseFile(gpGlobals->f.fpFBP);
+   UTIL_CloseFile(gpGlobals->f.fpMGO);
+   UTIL_CloseFile(gpGlobals->f.fpBALL);
+   UTIL_CloseFile(gpGlobals->f.fpDATA);
+   UTIL_CloseFile(gpGlobals->f.fpF);
+   UTIL_CloseFile(gpGlobals->f.fpFIRE);
+   UTIL_CloseFile(gpGlobals->f.fpRGM);
+   UTIL_CloseFile(gpGlobals->f.fpSSS);
 
-      //
-      // Free the game data
-      //
-      free(gpGlobals->g.lprgEventObject);
-      free(gpGlobals->g.lprgScriptEntry);
-      free(gpGlobals->g.lprgStore);
-      free(gpGlobals->g.lprgEnemy);
-      free(gpGlobals->g.lprgEnemyTeam);
-      free(gpGlobals->g.lprgMagic);
-      free(gpGlobals->g.lprgBattleField);
-      free(gpGlobals->g.lprgLevelUpMagic);
+   //
+   // Free the game data
+   //
+   free(gpGlobals->g.lprgEventObject);
+   free(gpGlobals->g.lprgScriptEntry);
+   free(gpGlobals->g.lprgStore);
+   free(gpGlobals->g.lprgEnemy);
+   free(gpGlobals->g.lprgEnemyTeam);
+   free(gpGlobals->g.lprgMagic);
+   free(gpGlobals->g.lprgBattleField);
+   free(gpGlobals->g.lprgLevelUpMagic);
 
-      //
-      // Free the object description data
-      //
-#ifndef PAL_WIN95
+   //
+   // Free the object description data
+   //
+   if (!gConfig.fIsWIN95)
       PAL_FreeObjectDesc(gpGlobals->lpObjectDesc);
-#endif
-      //
-      // Delete the instance
-      //
-      free(gpGlobals);
-   }
 
-   gpGlobals = NULL;
+   //
+   // Clear the instance
+   //
+   memset(gpGlobals, 0, sizeof(GLOBALVARS));
+
+   PAL_FreeConfig();
 }
 
 
@@ -163,7 +286,6 @@ PAL_ReadGlobalGameData(
 --*/
 {
    const GAMEDATA    *p = &gpGlobals->g;
-   unsigned int       i;
 
    LOAD_DATA(p->lprgScriptEntry, p->nScriptEntry * sizeof(SCRIPTENTRY),
       4, gpGlobals->f.fpSSS);
@@ -272,8 +394,8 @@ PAL_LoadDefaultGame(
 
 --*/
 {
-   const GAMEDATA    *p = &gpGlobals->g;
-   UINT32             i;
+   GAMEDATA    *p = &gpGlobals->g;
+   UINT32       i;
 
    //
    // Load the default data from the game data files.
@@ -282,8 +404,26 @@ PAL_LoadDefaultGame(
       0, gpGlobals->f.fpSSS);
    PAL_MKFReadChunk((LPBYTE)(p->rgScene), sizeof(p->rgScene), 1, gpGlobals->f.fpSSS);
    DO_BYTESWAP(p->rgScene, sizeof(p->rgScene));
-   PAL_MKFReadChunk((LPBYTE)(p->rgObject), sizeof(p->rgObject), 2, gpGlobals->f.fpSSS);
-   DO_BYTESWAP(p->rgObject, sizeof(p->rgObject));
+   if (gConfig.fIsWIN95)
+   {
+      PAL_MKFReadChunk((LPBYTE)(p->rgObject), sizeof(p->rgObject), 2, gpGlobals->f.fpSSS);
+      DO_BYTESWAP(p->rgObject, sizeof(p->rgObject));
+   }
+   else
+   {
+      OBJECT_DOS objects[MAX_OBJECTS];
+	  PAL_MKFReadChunk((LPBYTE)(objects), sizeof(objects), 2, gpGlobals->f.fpSSS);
+	  DO_BYTESWAP(objects, sizeof(objects));
+      //
+      // Convert the DOS-style data structure to WIN-style data structure
+      //
+      for (i = 0; i < MAX_OBJECTS; i++)
+      {
+         memcpy(&p->rgObject[i], &objects[i], sizeof(OBJECT_DOS));
+         p->rgObject[i].rgwData[6] = objects[i].rgwData[5];     // wFlags
+         p->rgObject[i].rgwData[5] = 0;                         // wScriptDesc or wReserved2
+      }
+   }
 
    PAL_MKFReadChunk((LPBYTE)(&(p->PlayerRoles)), sizeof(PLAYERROLES),
       3, gpGlobals->f.fpDATA);
@@ -327,9 +467,180 @@ PAL_LoadDefaultGame(
    gpGlobals->fEnteringScene = TRUE;
 }
 
+typedef struct tagSAVEDGAME_COMMON
+{
+	WORD             wSavedTimes;             // saved times
+	WORD             wViewportX, wViewportY;  // viewport location
+	WORD             nPartyMember;            // number of members in party
+	WORD             wNumScene;               // scene number
+	WORD             wPaletteOffset;
+	WORD             wPartyDirection;         // party direction
+	WORD             wNumMusic;               // music number
+	WORD             wNumBattleMusic;         // battle music number
+	WORD             wNumBattleField;         // battle field number
+	WORD             wScreenWave;             // level of screen waving
+	WORD             wBattleSpeed;            // battle speed
+	WORD             wCollectValue;           // value of "collected" items
+	WORD             wLayer;
+	WORD             wChaseRange;
+	WORD             wChasespeedChangeCycles;
+	WORD             nFollower;
+	WORD             rgwReserved2[3];         // unused
+	DWORD            dwCash;                  // amount of cash
+	PARTY            rgParty[MAX_PLAYABLE_PLAYER_ROLES];       // player party
+	TRAIL            rgTrail[MAX_PLAYABLE_PLAYER_ROLES];       // player trail
+	ALLEXPERIENCE    Exp;                     // experience data
+	PLAYERROLES      PlayerRoles;
+	POISONSTATUS     rgPoisonStatus[MAX_POISONS][MAX_PLAYABLE_PLAYER_ROLES]; // poison status
+	INVENTORY        rgInventory[MAX_INVENTORY];               // inventory status
+	SCENE            rgScene[MAX_SCENES];
+} SAVEDGAME_COMMON, *LPSAVEDGAME_COMMON;
+
+typedef struct tagSAVEDGAME_DOS
+{
+	WORD             wSavedTimes;             // saved times
+	WORD             wViewportX, wViewportY;  // viewport location
+	WORD             nPartyMember;            // number of members in party
+	WORD             wNumScene;               // scene number
+	WORD             wPaletteOffset;
+	WORD             wPartyDirection;         // party direction
+	WORD             wNumMusic;               // music number
+	WORD             wNumBattleMusic;         // battle music number
+	WORD             wNumBattleField;         // battle field number
+	WORD             wScreenWave;             // level of screen waving
+	WORD             wBattleSpeed;            // battle speed
+	WORD             wCollectValue;           // value of "collected" items
+	WORD             wLayer;
+	WORD             wChaseRange;
+	WORD             wChasespeedChangeCycles;
+	WORD             nFollower;
+	WORD             rgwReserved2[3];         // unused
+	DWORD            dwCash;                  // amount of cash
+	PARTY            rgParty[MAX_PLAYABLE_PLAYER_ROLES];       // player party
+	TRAIL            rgTrail[MAX_PLAYABLE_PLAYER_ROLES];       // player trail
+	ALLEXPERIENCE    Exp;                     // experience data
+	PLAYERROLES      PlayerRoles;
+	POISONSTATUS     rgPoisonStatus[MAX_POISONS][MAX_PLAYABLE_PLAYER_ROLES]; // poison status
+	INVENTORY        rgInventory[MAX_INVENTORY];               // inventory status
+	SCENE            rgScene[MAX_SCENES];
+	OBJECT_DOS       rgObject[MAX_OBJECTS];
+	EVENTOBJECT      rgEventObject[MAX_EVENT_OBJECTS];
+} SAVEDGAME_DOS, *LPSAVEDGAME_DOS;
+
+typedef struct tagSAVEDGAME_WIN
+{
+	WORD             wSavedTimes;             // saved times
+	WORD             wViewportX, wViewportY;  // viewport location
+	WORD             nPartyMember;            // number of members in party
+	WORD             wNumScene;               // scene number
+	WORD             wPaletteOffset;
+	WORD             wPartyDirection;         // party direction
+	WORD             wNumMusic;               // music number
+	WORD             wNumBattleMusic;         // battle music number
+	WORD             wNumBattleField;         // battle field number
+	WORD             wScreenWave;             // level of screen waving
+	WORD             wBattleSpeed;            // battle speed
+	WORD             wCollectValue;           // value of "collected" items
+	WORD             wLayer;
+	WORD             wChaseRange;
+	WORD             wChasespeedChangeCycles;
+	WORD             nFollower;
+	WORD             rgwReserved2[3];         // unused
+	DWORD            dwCash;                  // amount of cash
+	PARTY            rgParty[MAX_PLAYABLE_PLAYER_ROLES];       // player party
+	TRAIL            rgTrail[MAX_PLAYABLE_PLAYER_ROLES];       // player trail
+	ALLEXPERIENCE    Exp;                     // experience data
+	PLAYERROLES      PlayerRoles;
+	POISONSTATUS     rgPoisonStatus[MAX_POISONS][MAX_PLAYABLE_PLAYER_ROLES]; // poison status
+	INVENTORY        rgInventory[MAX_INVENTORY];               // inventory status
+	SCENE            rgScene[MAX_SCENES];
+	OBJECT           rgObject[MAX_OBJECTS];
+	EVENTOBJECT      rgEventObject[MAX_EVENT_OBJECTS];
+} SAVEDGAME_WIN, *LPSAVEDGAME_WIN;
+
+static BOOL
+PAL_LoadGame_Common(
+	int                 iSaveSlot,
+	LPSAVEDGAME_COMMON  s,
+	size_t              size
+)
+{
+	//
+	// Try to open the specified file
+	//
+	FILE *fp = UTIL_OpenFileAtPath(gConfig.pszSavePath, PAL_va(1, "%d.rpg", iSaveSlot));
+	//
+	// Read all data from the file and close.
+	//
+	size_t n = fp ? fread(s, 1, size, fp) : 0;
+
+	if (fp != NULL)
+	{
+		fclose(fp);
+	}
+
+	if (n < size - sizeof(EVENTOBJECT) * MAX_EVENT_OBJECTS)
+	{
+		return FALSE;
+	}
+
+	//
+	// Adjust endianness
+	//
+	DO_BYTESWAP(s, size);
+
+	//
+	// Cash amount is in DWORD, so do a wordswap in Big-Endian.
+	//
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+	s->dwCash = ((s->dwCash >> 16) | (s->dwCash << 16));
+#endif
+
+	//
+	// Get common data from the saved game struct.
+	//
+	gpGlobals->viewport = PAL_XY(s->wViewportX, s->wViewportY);
+	gpGlobals->wMaxPartyMemberIndex = s->nPartyMember;
+	gpGlobals->wNumScene = s->wNumScene;
+	gpGlobals->fNightPalette = (s->wPaletteOffset != 0);
+	gpGlobals->wPartyDirection = s->wPartyDirection;
+	gpGlobals->wNumMusic = s->wNumMusic;
+	gpGlobals->wNumBattleMusic = s->wNumBattleMusic;
+	gpGlobals->wNumBattleField = s->wNumBattleField;
+	gpGlobals->wScreenWave = s->wScreenWave;
+	gpGlobals->sWaveProgression = 0;
+	gpGlobals->wCollectValue = s->wCollectValue;
+	gpGlobals->wLayer = s->wLayer;
+	gpGlobals->wChaseRange = s->wChaseRange;
+	gpGlobals->wChasespeedChangeCycles = s->wChasespeedChangeCycles;
+	gpGlobals->nFollower = s->nFollower;
+	gpGlobals->dwCash = s->dwCash;
+#ifndef PAL_CLASSIC
+	gpGlobals->bBattleSpeed = s->wBattleSpeed;
+	if (gpGlobals->bBattleSpeed > 5 || gpGlobals->bBattleSpeed == 0)
+	{
+		gpGlobals->bBattleSpeed = 2;
+	}
+#endif
+
+	memcpy(gpGlobals->rgParty, s->rgParty, sizeof(gpGlobals->rgParty));
+	memcpy(gpGlobals->rgTrail, s->rgTrail, sizeof(gpGlobals->rgTrail));
+	gpGlobals->Exp = s->Exp;
+	gpGlobals->g.PlayerRoles = s->PlayerRoles;
+	memset(gpGlobals->rgPoisonStatus, 0, sizeof(gpGlobals->rgPoisonStatus));
+	memcpy(gpGlobals->rgInventory, s->rgInventory, sizeof(gpGlobals->rgInventory));
+	memcpy(gpGlobals->g.rgScene, s->rgScene, sizeof(gpGlobals->g.rgScene));
+
+	gpGlobals->fEnteringScene = FALSE;
+
+	PAL_CompressInventory();
+
+	return TRUE;
+}
+
 static INT
-PAL_LoadGame(
-   LPCSTR         szFileName
+PAL_LoadGame_DOS(
+   int            iSaveSlot
 )
 /*++
   Purpose:
@@ -346,78 +657,27 @@ PAL_LoadGame(
 
 --*/
 {
-   FILE                     *fp;
-   PAL_LARGE SAVEDGAME       s;
-   UINT32                    i;
-
-   //
-   // Try to open the specified file
-   //
-   fp = fopen(szFileName, "rb");
-   if (fp == NULL)
-   {
-      return -1;
-   }
-
-   //
-   // Read all data from the file and close.
-   //
-   fread(&s, sizeof(SAVEDGAME), 1, fp);
-   fclose(fp);
-
-   //
-   // Adjust endianness
-   //
-   DO_BYTESWAP(&s, sizeof(SAVEDGAME));
-
-   //
-   // Cash amount is in DWORD, so do a wordswap in Big-Endian.
-   //
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-   s.dwCash = ((s.dwCash >> 16) | (s.dwCash << 16));
-#endif
+   SAVEDGAME_DOS   *s = (SAVEDGAME_DOS*)malloc(sizeof(SAVEDGAME_DOS));
+   int                       i;
 
    //
    // Get all the data from the saved game struct.
    //
-   gpGlobals->viewport = PAL_XY(s.wViewportX, s.wViewportY);
-   gpGlobals->wMaxPartyMemberIndex = s.nPartyMember;
-   gpGlobals->wNumScene = s.wNumScene;
-   gpGlobals->fNightPalette = (s.wPaletteOffset != 0);
-   gpGlobals->wPartyDirection = s.wPartyDirection;
-   gpGlobals->wNumMusic = s.wNumMusic;
-   gpGlobals->wNumBattleMusic = s.wNumBattleMusic;
-   gpGlobals->wNumBattleField = s.wNumBattleField;
-   gpGlobals->wScreenWave = s.wScreenWave;
-   gpGlobals->sWaveProgression = 0;
-   gpGlobals->wCollectValue = s.wCollectValue;
-   gpGlobals->wLayer = s.wLayer;
-   gpGlobals->wChaseRange = s.wChaseRange;
-   gpGlobals->wChasespeedChangeCycles = s.wChasespeedChangeCycles;
-   gpGlobals->nFollower = s.nFollower;
-   gpGlobals->dwCash = s.dwCash;
-#ifndef PAL_CLASSIC
-   gpGlobals->bBattleSpeed = s.wBattleSpeed;
-   if (gpGlobals->bBattleSpeed > 5 || gpGlobals->bBattleSpeed == 0)
+   if (!PAL_LoadGame_Common(iSaveSlot, (LPSAVEDGAME_COMMON)s, sizeof(SAVEDGAME_DOS)))
+	   return -1;
+
+   //
+   // Convert the DOS-style data structure to WIN-style data structure
+   //
+   for (i = 0; i < MAX_OBJECTS; i++)
    {
-      gpGlobals->bBattleSpeed = 2;
+      memcpy(&gpGlobals->g.rgObject[i], &s->rgObject[i], sizeof(OBJECT_DOS));
+      gpGlobals->g.rgObject[i].rgwData[6] = s->rgObject[i].rgwData[5];     // wFlags
+      gpGlobals->g.rgObject[i].rgwData[5] = 0;                            // wScriptDesc or wReserved2
    }
-#endif
+   memcpy(gpGlobals->g.lprgEventObject, s->rgEventObject, sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
 
-   memcpy(gpGlobals->rgParty, s.rgParty, sizeof(gpGlobals->rgParty));
-   memcpy(gpGlobals->rgTrail, s.rgTrail, sizeof(gpGlobals->rgTrail));
-   gpGlobals->Exp = s.Exp;
-   gpGlobals->g.PlayerRoles = s.PlayerRoles;
-   memset(gpGlobals->rgPoisonStatus, 0, sizeof(gpGlobals->rgPoisonStatus));
-   memcpy(gpGlobals->rgInventory, s.rgInventory, sizeof(gpGlobals->rgInventory));
-   memcpy(gpGlobals->g.rgScene, s.rgScene, sizeof(gpGlobals->g.rgScene));
-   memcpy(gpGlobals->g.rgObject, s.rgObject, sizeof(gpGlobals->g.rgObject));
-   memcpy(gpGlobals->g.lprgEventObject, s.rgEventObject,
-      sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
-
-   gpGlobals->fEnteringScene = FALSE;
-
-   PAL_CompressInventory();
+   free(s);
 
    //
    // Success
@@ -425,9 +685,124 @@ PAL_LoadGame(
    return 0;
 }
 
-VOID
-PAL_SaveGame(
-   LPCSTR         szFileName,
+static INT
+PAL_LoadGame_WIN(
+   int            iSaveSlot
+)
+/*++
+  Purpose:
+
+    Load a saved game.
+
+  Parameters:
+
+    [IN]  szFileName - file name of saved game.
+
+  Return value:
+
+    0 if success, -1 if failed.
+
+--*/
+{
+   SAVEDGAME_WIN   *s = (SAVEDGAME_WIN*)malloc(sizeof(SAVEDGAME_WIN));
+
+   //
+   // Get all the data from the saved game struct.
+   //
+   if (!PAL_LoadGame_Common(iSaveSlot, (LPSAVEDGAME_COMMON)s, sizeof(SAVEDGAME_WIN)))
+	   return -1;
+
+   memcpy(gpGlobals->g.rgObject, s->rgObject, sizeof(gpGlobals->g.rgObject));
+   memcpy(gpGlobals->g.lprgEventObject, s->rgEventObject, sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
+    
+   free(s);
+
+   //
+   // Success
+   //
+   return 0;
+}
+
+static INT
+PAL_LoadGame(
+   int            iSaveSlot
+)
+{
+	return gConfig.fIsWIN95 ? PAL_LoadGame_WIN(iSaveSlot) : PAL_LoadGame_DOS(iSaveSlot);
+}
+
+static VOID
+PAL_SaveGame_Common(
+	int                iSaveSlot,
+	WORD               wSavedTimes,
+	LPSAVEDGAME_COMMON s,
+	size_t             size
+)
+{
+	FILE *fp;
+	int   i;
+
+	s->wSavedTimes = wSavedTimes;
+	s->wViewportX = PAL_X(gpGlobals->viewport);
+	s->wViewportY = PAL_Y(gpGlobals->viewport);
+	s->nPartyMember = gpGlobals->wMaxPartyMemberIndex;
+	s->wNumScene = gpGlobals->wNumScene;
+	s->wPaletteOffset = (gpGlobals->fNightPalette ? 0x180 : 0);
+	s->wPartyDirection = gpGlobals->wPartyDirection;
+	s->wNumMusic = gpGlobals->wNumMusic;
+	s->wNumBattleMusic = gpGlobals->wNumBattleMusic;
+	s->wNumBattleField = gpGlobals->wNumBattleField;
+	s->wScreenWave = gpGlobals->wScreenWave;
+	s->wCollectValue = gpGlobals->wCollectValue;
+	s->wLayer = gpGlobals->wLayer;
+	s->wChaseRange = gpGlobals->wChaseRange;
+	s->wChasespeedChangeCycles = gpGlobals->wChasespeedChangeCycles;
+	s->nFollower = gpGlobals->nFollower;
+	s->dwCash = gpGlobals->dwCash;
+#ifndef PAL_CLASSIC
+	s->wBattleSpeed = gpGlobals->bBattleSpeed;
+#else
+	s->wBattleSpeed = 2;
+#endif
+
+	memcpy(s->rgParty, gpGlobals->rgParty, sizeof(gpGlobals->rgParty));
+	memcpy(s->rgTrail, gpGlobals->rgTrail, sizeof(gpGlobals->rgTrail));
+	s->Exp = gpGlobals->Exp;
+	s->PlayerRoles = gpGlobals->g.PlayerRoles;
+	memcpy(s->rgPoisonStatus, gpGlobals->rgPoisonStatus, sizeof(gpGlobals->rgPoisonStatus));
+	memcpy(s->rgInventory, gpGlobals->rgInventory, sizeof(gpGlobals->rgInventory));
+	memcpy(s->rgScene, gpGlobals->g.rgScene, sizeof(gpGlobals->g.rgScene));
+
+	//
+	// Adjust endianness
+	//
+	DO_BYTESWAP(s, size);
+
+	//
+	// Cash amount is in DWORD, so do a wordswap in Big-Endian.
+	//
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+	s->dwCash = ((s->dwCash >> 16) | (s->dwCash << 16));
+#endif
+
+	//
+	// Try writing to file
+	//
+	if ((fp = UTIL_OpenFileAtPathForMode(gConfig.pszSavePath, PAL_va(1, "%d.rpg", iSaveSlot), "wb")) == NULL)
+	{
+		return;
+	}
+
+	i = PAL_MKFGetChunkSize(0, gpGlobals->f.fpSSS);
+	i += size - sizeof(EVENTOBJECT) * MAX_EVENT_OBJECTS;
+
+	fwrite(s, i, 1, fp);
+	fclose(fp);
+}
+
+static VOID
+PAL_SaveGame_DOS(
+   int            iSaveSlot,
    WORD           wSavedTimes
 )
 /*++
@@ -445,74 +820,69 @@ PAL_SaveGame(
 
 --*/
 {
-   FILE                     *fp;
-   PAL_LARGE SAVEDGAME       s;
+   SAVEDGAME_DOS   *s = (SAVEDGAME_DOS*)malloc(sizeof(SAVEDGAME_DOS));
    UINT32                    i;
+
+   //
+   // Convert the WIN-style data structure to DOS-style data structure
+   //
+   for (i = 0; i < MAX_OBJECTS; i++)
+   {
+      memcpy(&s->rgObject[i], &gpGlobals->g.rgObject[i], sizeof(OBJECT_DOS));
+      s->rgObject[i].rgwData[5] = gpGlobals->g.rgObject[i].rgwData[6];     // wFlags
+   }
+   memcpy(s->rgEventObject, gpGlobals->g.lprgEventObject, sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
 
    //
    // Put all the data to the saved game struct.
    //
-   s.wViewportX = PAL_X(gpGlobals->viewport);
-   s.wViewportY = PAL_Y(gpGlobals->viewport);
-   s.nPartyMember = gpGlobals->wMaxPartyMemberIndex;
-   s.wNumScene = gpGlobals->wNumScene;
-   s.wPaletteOffset = (gpGlobals->fNightPalette ? 0x180 : 0);
-   s.wPartyDirection = gpGlobals->wPartyDirection;
-   s.wNumMusic = gpGlobals->wNumMusic;
-   s.wNumBattleMusic = gpGlobals->wNumBattleMusic;
-   s.wNumBattleField = gpGlobals->wNumBattleField;
-   s.wScreenWave = gpGlobals->wScreenWave;
-   s.wCollectValue = gpGlobals->wCollectValue;
-   s.wLayer = gpGlobals->wLayer;
-   s.wChaseRange = gpGlobals->wChaseRange;
-   s.wChasespeedChangeCycles = gpGlobals->wChasespeedChangeCycles;
-   s.nFollower = gpGlobals->nFollower;
-   s.dwCash = gpGlobals->dwCash;
-#ifndef PAL_CLASSIC
-   s.wBattleSpeed = gpGlobals->bBattleSpeed;
-#else
-   s.wBattleSpeed = 2;
-#endif
+   PAL_SaveGame_Common(iSaveSlot, wSavedTimes, (LPSAVEDGAME_COMMON)s, sizeof(SAVEDGAME_DOS));
+   free(s);
+}
 
-   memcpy(s.rgParty, gpGlobals->rgParty, sizeof(gpGlobals->rgParty));
-   memcpy(s.rgTrail, gpGlobals->rgTrail, sizeof(gpGlobals->rgTrail));
-   s.Exp = gpGlobals->Exp;
-   s.PlayerRoles = gpGlobals->g.PlayerRoles;
-   memcpy(s.rgPoisonStatus, gpGlobals->rgPoisonStatus, sizeof(gpGlobals->rgPoisonStatus));
-   memcpy(s.rgInventory, gpGlobals->rgInventory, sizeof(gpGlobals->rgInventory));
-   memcpy(s.rgScene, gpGlobals->g.rgScene, sizeof(gpGlobals->g.rgScene));
-   memcpy(s.rgObject, gpGlobals->g.rgObject, sizeof(gpGlobals->g.rgObject));
-   memcpy(s.rgEventObject, gpGlobals->g.lprgEventObject,
-      sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
+static VOID
+PAL_SaveGame_WIN(
+   int            iSaveSlot,
+   WORD           wSavedTimes
+)
+/*++
+  Purpose:
 
-   s.wSavedTimes = wSavedTimes;
+    Save the current game state to file.
+
+  Parameters:
+
+    [IN]  szFileName - file name of saved game.
+
+  Return value:
+
+    None.
+
+--*/
+{
+   SAVEDGAME_WIN   *s = (SAVEDGAME_WIN*)malloc(sizeof(SAVEDGAME_WIN));
 
    //
-   // Adjust endianness
+   // Put all the data to the saved game struct.
    //
-   DO_BYTESWAP(&s, sizeof(SAVEDGAME));
+   memcpy(&s->rgObject, gpGlobals->g.rgObject, sizeof(gpGlobals->g.rgObject));
+   memcpy(&s->rgEventObject, gpGlobals->g.lprgEventObject, sizeof(EVENTOBJECT) * gpGlobals->g.nEventObject);
 
-   //
-   // Cash amount is in DWORD, so do a wordswap in Big-Endian.
-   //
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-   s.dwCash = ((s.dwCash >> 16) | (s.dwCash << 16));
-#endif
+   PAL_SaveGame_Common(iSaveSlot, wSavedTimes, (LPSAVEDGAME_COMMON)s, sizeof(SAVEDGAME_WIN));
 
-   //
-   // Try writing to file
-   //
-   fp = fopen(szFileName, "wb");
-   if (fp == NULL)
-   {
-      return;
-   }
+   free(s);
+}
 
-   i = PAL_MKFGetChunkSize(0, gpGlobals->f.fpSSS);
-   i += sizeof(SAVEDGAME) - sizeof(EVENTOBJECT) * MAX_EVENT_OBJECTS;
-
-   fwrite(&s, i, 1, fp);
-   fclose(fp);
+VOID
+PAL_SaveGame(
+   int            iSaveSlot,
+   WORD           wSavedTimes
+)
+{
+	if (gConfig.fIsWIN95)
+		PAL_SaveGame_WIN(iSaveSlot, wSavedTimes);
+	else
+		PAL_SaveGame_DOS(iSaveSlot, wSavedTimes);
 }
 
 VOID
@@ -541,7 +911,7 @@ PAL_InitGameData(
    //
    // try loading from the saved game file.
    //
-   if (iSaveSlot == 0 || PAL_LoadGame(va("%s%d%s", PAL_SAVE_PREFIX, iSaveSlot, ".rpg")) != 0)
+   if (iSaveSlot == 0 || PAL_LoadGame(iSaveSlot) != 0)
    {
       //
       // Cannot load the saved game file. Load the defaults.
@@ -557,6 +927,69 @@ PAL_InitGameData(
    memset(gpGlobals->rgPlayerStatus, 0, sizeof(gpGlobals->rgPlayerStatus));
 
    PAL_UpdateEquipments();
+}
+
+INT
+PAL_CountItem(
+   WORD          wObjectID
+)
+/*++
+ Purpose:
+ 
+ Count the specified kind of item in the inventory AND in players' equipments.
+ 
+ Parameters:
+ 
+ [IN]  wObjectID - object number of the item.
+ 
+ Return value:
+ 
+ Counted value.
+ 
+ --*/
+{
+    int          index;
+    int          count;
+    int          i,j,w;
+
+    if (wObjectID == 0)
+    {
+        return FALSE;
+    }
+    
+    index = 0;
+    count = 0;
+    
+    //
+    // Search for the specified item in the inventory
+    //
+    while (index < MAX_INVENTORY)
+    {
+        if (gpGlobals->rgInventory[index].wItem == wObjectID)
+        {
+            count = gpGlobals->rgInventory[index].nAmount;
+            break;
+        }
+        else if (gpGlobals->rgInventory[index].wItem == 0)
+        {
+            break;
+        }
+        index++;
+    }
+    
+    for (i = 0; i <= gpGlobals->wMaxPartyMemberIndex; i++)
+    {
+        w = gpGlobals->rgParty[i].wPlayerRole;
+        
+        for (j = 0; j < MAX_PLAYER_EQUIPMENTS; j++)
+        {
+            if (gpGlobals->g.PlayerRoles.rgwEquipment[j][w] == wObjectID)
+            {
+                count++;
+            }
+        }
+    }
+    return count;
 }
 
 BOOL
@@ -668,6 +1101,11 @@ PAL_AddItemToInventory(
          }
 
          gpGlobals->rgInventory[index].nAmount -= iNum;
+         //
+         /// Need process last item
+         //
+         if(gpGlobals->rgInventory[index].nAmount == 0 && index == gpGlobals->iCurInvMenuItem && index+1 < MAX_INVENTORY && gpGlobals->rgInventory[index+1].nAmount <= 0)
+            gpGlobals->iCurInvMenuItem --;
          return TRUE;
       }
 
@@ -737,10 +1175,7 @@ PAL_CompressInventory(
 
    for (i = 0; i < MAX_INVENTORY; i++)
    {
-      if (gpGlobals->rgInventory[i].wItem == 0)
-      {
-         break;
-      }
+      //removed detect zero then break code, due to incompatible with save file hacked by palmod
 
       if (gpGlobals->rgInventory[i].nAmount > 0)
       {
@@ -785,6 +1220,8 @@ PAL_IncreaseHPMP(
 --*/
 {
    BOOL           fSuccess = FALSE;
+   WORD           wOrigHP = gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole];
+   WORD           wOrigMP = gpGlobals->g.PlayerRoles.rgwMP[wPlayerRole];
 
    //
    // Only care about alive players
@@ -823,7 +1260,12 @@ PAL_IncreaseHPMP(
             gpGlobals->g.PlayerRoles.rgwMaxMP[wPlayerRole];
       }
 
-      fSuccess = TRUE;
+      //
+      // Avoid over treatment
+      //
+      if (wOrigHP != gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] ||
+          wOrigMP != gpGlobals->g.PlayerRoles.rgwMP[wPlayerRole])
+         fSuccess = TRUE;
    }
 
    return fSuccess;
@@ -1012,7 +1454,7 @@ PAL_AddPoisonForPlayer(
    {
       gpGlobals->rgPoisonStatus[i][index].wPoisonID = wPoisonID;
       gpGlobals->rgPoisonStatus[i][index].wPoisonScript =
-         gpGlobals->g.rgObject[wPoisonID].poison.wPlayerScript;
+		  PAL_RunTriggerScript(gpGlobals->g.rgObject[wPoisonID].poison.wPlayerScript, wPlayerRole);
    }
 }
 
@@ -1720,8 +2162,7 @@ PAL_SetPlayerStatus(
       //
       // for "bad" statuses, don't set the status when we already have it
       //
-      if (gpGlobals->g.PlayerRoles.rgwHP[wPlayerRole] != 0 &&
-         gpGlobals->rgPlayerStatus[wPlayerRole][wStatusID] == 0)
+      if (gpGlobals->rgPlayerStatus[wPlayerRole][wStatusID] == 0)
       {
          gpGlobals->rgPlayerStatus[wPlayerRole][wStatusID] = wNumRound;
       }

@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,11 +23,7 @@
 #ifndef UIBATTLE_H
 #define UIBATTLE_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
+#include "common.h"
 #include "ui.h"
 
 typedef enum tagBATTLEUISTATE
@@ -97,15 +94,15 @@ typedef struct tagBATTLEUI
    BATTLEUISTATE    state;
    BATTLEMENUSTATE  MenuState;
 
-   CHAR             szMsg[256];           // message to be shown on the screen
-   CHAR             szNextMsg[256];       // next message to be shown on the screen
+   WCHAR            szMsg[256];           // message to be shown on the screen
+   WCHAR            szNextMsg[256];       // next message to be shown on the screen
    DWORD            dwMsgShowTime;        // the end time of showing the message
    WORD             wNextMsgDuration;     // duration of the next message
 
    WORD             wCurPlayerIndex;      // index of the current player
    WORD             wSelectedAction;      // current selected action
-   WORD             wSelectedIndex;       // current selected index of player or enemy
-   WORD             wPrevEnemyTarget;     // previous enemy target
+   INT              iSelectedIndex;       // current selected index of player or enemy
+   INT              iPrevEnemyTarget;     // previous enemy target
 
    WORD             wActionType;          // type of action to be performed
    WORD             wObjectID;            // object ID of the item or magic to use
@@ -114,6 +111,8 @@ typedef struct tagBATTLEUI
 
    SHOWNUM          rgShowNum[BATTLEUI_MAX_SHOWNUM];
 } BATTLEUI;
+
+PAL_C_LINKAGE_BEGIN
 
 VOID
 PAL_PlayerInfoBox(
@@ -126,7 +125,7 @@ PAL_PlayerInfoBox(
 
 VOID
 PAL_BattleUIShowText(
-   LPCSTR        lpszText,
+   LPCWSTR       lpszText,
    WORD          wDuration
 );
 
@@ -147,7 +146,6 @@ PAL_BattleUIShowNum(
    NUMCOLOR       color
 );
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
+
 #endif

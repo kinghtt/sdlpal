@@ -1,7 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
-
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -24,23 +24,56 @@
 #define UTIL_H
 
 #include "common.h"
+#include "palcommon.h"
 
-//#define ENABLE_LOG 1
+PAL_C_LINKAGE_BEGIN
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+void
+UTIL_MsgBox(
+   char *string
+);
+
+long
+flength(
+   FILE *fp
+);
 
 void
 trim(
    char *str
 );
 
-char *va(
-   const char *format,
-   ...
+char *
+UTIL_GlobalBuffer(
+	int         index
 );
+#define PAL_BUFFER_SIZE_ARGS(i) UTIL_GlobalBuffer(i), PAL_GLOBAL_BUFFER_SIZE
+
+/*++
+  Purpose:
+
+    Does a varargs printf into the user-supplied buffer,
+	so we don't need to have varargs versions of all text functions.
+
+  Parameters:
+
+    buffer - user-supplied buffer.
+	buflen - size of the buffer, including null-terminator.
+    format - the format string.
+
+  Return value:
+
+    The value of buffer if buffer is non-NULL and buflen > 0, otherwise NULL.
+
+--*/
+char *
+UTIL_va(
+	char       *buffer,
+	int         buflen,
+	const char *format,
+	...
+);
+#define PAL_va(i, fmt, ...) UTIL_va(UTIL_GlobalBuffer(i), PAL_GLOBAL_BUFFER_SIZE, fmt, __VA_ARGS__)
 
 int
 RandomLong(
@@ -82,8 +115,50 @@ UTIL_OpenRequiredFile(
 );
 
 FILE *
+UTIL_OpenRequiredFileForMode(
+   LPCSTR               lpszFileName,
+   LPCSTR               szMode
+);
+
+FILE *
 UTIL_OpenFile(
    LPCSTR               lpszFileName
+);
+
+FILE *
+UTIL_OpenFileForMode(
+   LPCSTR               lpszFileName,
+   LPCSTR               szMode
+);
+
+FILE *
+UTIL_OpenFileAtPath(
+	LPCSTR              lpszPath,
+	LPCSTR              lpszFileName
+);
+
+/*++
+  Purpose:
+
+    Open a file in desired mode at the specific path.
+	If fails, return NULL.
+
+  Parameters:
+
+    [IN]  lpszPath - path to locate the file.
+    [IN]  lpszFileName - file name to open.
+    [IN]  szMode - file open mode.
+
+  Return value:
+
+    Pointer to the file.
+
+--*/
+FILE *
+UTIL_OpenFileAtPathForMode(
+	LPCSTR              lpszPath,
+	LPCSTR              lpszFileName,
+	LPCSTR              szMode
 );
 
 VOID
@@ -91,50 +166,202 @@ UTIL_CloseFile(
    FILE                *fp
 );
 
-#define _PATH_LOG           PAL_PREFIX "log.txt"
-#define LOG_EMERG           0 /* system is unusable */
-#define LOG_ALERT           1 /* action must be taken immediately */
-#define LOG_CRIT            2 /* critical conditions */
-#define LOG_ERR             3 /* error conditions */
-#define LOG_WARNING         4 /* warning conditions */
-#define LOG_NOTICE          5 /* normal but significant condition */
-#define LOG_INFO            6 /* informational */
-#define LOG_DEBUG           7 /* debug-level messages */
-#define LOG_LAST_PRIORITY   8 /* last level */
+/*++
+  Purpose:
 
-#ifdef ENABLE_LOG
+    Combine the 'dir' and 'file' part into a single path string.
+	If 'dir' is non-NULL, then it ensures that the output string contains
+	'/' between 'dir' and 'file' (no matter whether 'file' is NULL or not).
 
-FILE *
-UTIL_OpenLog(
-   VOID
+  Parameters:
+
+    buffer - user-supplied buffer.
+	buflen - size of the buffer, including null-terminator.
+    dir    - the directory path.
+	file   - the file path.
+
+  Return value:
+
+    The value of buffer if buffer is non-NULL and buflen > 0, otherwise NULL.
+
+--*/
+const char *
+UTIL_CombinePath(
+	char       *buffer,
+	size_t      buflen,
+	int         numentry,
+	...
+);
+#define PAL_CombinePath(i, d, f) UTIL_CombinePath(UTIL_GlobalBuffer(i), PAL_GLOBAL_BUFFER_SIZE, 2, (d), (f))
+
+const char *
+UTIL_GetFullPathName(
+	char       *buffer,
+	size_t      buflen,
+	const char *basepath,
+	const char *subpath
 );
 
-VOID
-UTIL_CloseLog(
-   VOID
+PALFILE
+UTIL_CheckResourceFiles(
+	const char *path,
+	const char *msgfile
 );
 
-VOID
-UTIL_WriteLog(
-   int             Priority,
-   const char     *Fmt,
-   ...
+/*
+ * Platform-specific utilities
+ */
+
+BOOL
+UTIL_GetScreenSize(
+	DWORD *pdwScreenWidth,
+	DWORD *pdwScreenHeight
 );
 
-#else
+BOOL
+UTIL_IsAbsolutePath(
+	const char *lpszFileName
+);
 
-#define UTIL_OpenLog()       ((void)(0))
-#define UTIL_CloseLog()      ((void)(0))
-#ifdef _MSC_VER
-__forceinline VOID UTIL_WriteLog(int i, const char *p, ...) {}
-#else
-#define UTIL_WriteLog(...)   ((void)(0))
-#endif
+int
+UTIL_Platform_Startup(
+	int   argc,
+	char *argv[]
+);
 
-#endif
+int
+UTIL_Platform_Init(
+	int   argc,
+	char *argv[]
+);
 
-#ifdef __cplusplus
-}
-#endif
+void
+UTIL_Platform_Quit(
+	void
+);
+
+
+/*
+ * Logging utilities
+ */
+
+/*++
+  Purpose:
+
+    The pointer to callback function that produces actual log output.
+
+  Parameters:
+
+    [IN]  level    - The log level of this output call.
+	[IN]  full_log - The full log string produced by UTIL_LogOutput.
+	[IN]  user_log - The log string produced by user-provided format.
+
+  Return value:
+
+    None.
+
+--*/
+typedef void(*LOGCALLBACK)(LOGLEVEL level, const char *full_log, const char *user_log);
+
+/*++
+  Purpose:
+
+    Adds a log output callback.
+
+  Parameters:
+
+    [IN]  callback     - The callback function to be added. Once added,
+	                     it will be called by UTIL_LogOutput.
+    [IN]  loglevel     - The minimal log level that the callback should
+	                     be called. Any log whose level below this will
+						 be ignored by the callback.
+
+  Return value:
+
+    The slot id (>= 0), -1 if all slots are used or callback is NULL.
+
+--*/
+int
+UTIL_LogAddOutputCallback(
+	LOGCALLBACK    callback,
+	LOGLEVEL       loglevel
+);
+
+/*++
+  Purpose:
+
+    Removes a log output callback.
+
+  Parameters:
+
+    [IN]  id           - The id of callback function to be removed.
+
+  Return value:
+
+    None
+
+--*/
+void
+UTIL_LogRemoveOutputCallback(
+	int            id
+);
+
+/*++
+  Purpose:
+
+    Set the minimal log level that could be output.
+	Any level below this level will produce no output.
+
+  Parameters:
+
+    [IN]  minlevel - The minimal log level, must be within the
+	                 range [LOGLEVEL_MIN, LOGLEVEL_MAX].
+
+  Return value:
+
+    None.
+
+--*/
+void
+UTIL_LogOutput(
+	LOGLEVEL       level,
+	const char    *fmt,
+	...
+);
+
+/*++
+  Purpose:
+
+    Set the minimal log level that could be output.
+	Any level below this level will produce no output.
+
+  Parameters:
+
+    [IN]  minlevel - The minimal log level, must be within the
+	                 range [LOGLEVEL_MIN, LOGLEVEL_MAX].
+
+  Return value:
+
+    None.
+
+--*/
+void
+UTIL_LogSetLevel(
+	LOGLEVEL       minlevel
+);
+
+void
+UTIL_LogToFile(
+	LOGLEVEL       _,
+	const char    *string,
+	const char    *__
+);
+
+void
+UTIL_LogSetPrelude(
+    const char    *prelude
+);
+
+PAL_C_LINKAGE_END
 
 #endif

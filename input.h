@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -25,21 +26,19 @@
 #include "common.h"
 #include "palcommon.h"
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
 typedef struct tagPALINPUTSTATE
 {
    PALDIRECTION           dir, prevdir;
    DWORD                  dwKeyPress;
+#if PAL_HAS_JOYSTICKS
+   int                    axisX,axisY;
+   BOOL                   joystickNeedUpdate;
+#endif
 } PALINPUTSTATE;
-
-extern volatile PALINPUTSTATE g_InputState;
 
 enum PALKEY
 {
+   kKeyNone        = 0,
    kKeyMenu        = (1 << 0),
    kKeySearch      = (1 << 1),
    kKeyDown        = (1 << 2),
@@ -56,7 +55,11 @@ enum PALKEY
    kKeyFlee        = (1 << 13),
    kKeyStatus      = (1 << 14),
    kKeyForce       = (1 << 15),
+   kKeyHome        = (1 << 16),
+   kKeyEnd         = (1 << 17),
 };
+
+PAL_C_LINKAGE_BEGIN
 
 VOID
 PAL_ClearKeyState(
@@ -78,16 +81,24 @@ PAL_ShutdownInput(
    VOID
 );
 
-int
-PAL_PollEvent(
-   SDL_Event *event
+VOID
+PAL_SetTouchBounds(
+   DWORD dwScreenWidth,
+   DWORD dwScreenHeight,
+   SDL_Rect renderRect
 );
 
+VOID
+PAL_RegisterInputFilter(
+   void (*init_filter)(),
+   int (*event_filter)(const SDL_Event *, volatile PALINPUTSTATE *),
+   void (*shutdown_filter)()
+);
+
+extern volatile PALINPUTSTATE g_InputState;
 
 extern BOOL g_fUseJoystick;
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
 
 #endif

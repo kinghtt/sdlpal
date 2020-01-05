@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,16 +23,15 @@
 #ifndef RES_H
 #define RES_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+#include "common.h"
 
 typedef enum tagLOADRESFLAG
 {
    kLoadScene          = (1 << 0),    // load a scene
    kLoadPlayerSprite   = (1 << 1),    // load player sprites
 } LOADRESFLAG, *LPLOADRESFLAG;
+
+PAL_C_LINKAGE_BEGIN
 
 VOID
 PAL_InitResources(
@@ -73,8 +73,6 @@ PAL_GetEventObjectSprite(
    WORD      wEventObjectID
 );
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
 
 #endif

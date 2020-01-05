@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -322,11 +323,11 @@ PAL_SceneFade(
          }
          VIDEO_SetPalette(newpalette);
 
-         while (PAL_PollEvent(NULL));
+         PAL_ProcessEvent();
 
-         while (SDL_GetTicks() < time)
+         while (!SDL_TICKS_PASSED(SDL_GetTicks(), time))
          {
-            while (PAL_PollEvent(NULL));
+            PAL_ProcessEvent();
             SDL_Delay(5);
          }
       }
@@ -358,11 +359,11 @@ PAL_SceneFade(
          }
          VIDEO_SetPalette(newpalette);
 
-         while (PAL_PollEvent(NULL));
+         PAL_ProcessEvent();
 
-         while (SDL_GetTicks() < time)
+         while (!SDL_TICKS_PASSED(SDL_GetTicks(), time))
          {
-            while (PAL_PollEvent(NULL));
+            PAL_ProcessEvent();
             SDL_Delay(5);
          }
       }
@@ -438,11 +439,11 @@ PAL_PaletteFade(
          VIDEO_UpdateScreen(NULL);
       }
 
-      while (PAL_PollEvent(NULL));
+      PAL_ProcessEvent();
 
-      while (SDL_GetTicks() < time)
+      while (!SDL_TICKS_PASSED(SDL_GetTicks(), time))
       {
-         while (PAL_PollEvent(NULL));
+         PAL_ProcessEvent();
          SDL_Delay(5);
       }
    }

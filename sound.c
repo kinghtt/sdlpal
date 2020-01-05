@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -20,181 +21,880 @@
 //
 
 #include "palcommon.h"
-#include "common.h"
-#include "sound.h"
-#include "rixplay.h"
+#include "global.h"
+#include "palcfg.h"
+#include "audio.h"
+#include "players.h"
 #include "util.h"
-
-#ifdef PAL_HAS_NATIVEMIDI
+#include "resampler.h"
 #include "midi.h"
-#endif
+#include "riff.h"
+#include <math.h>
 
-#ifdef PAL_HAS_MP3
-#include "libmad/music_mad.h"
-#endif
-
-static BOOL  gSndOpened = FALSE;
-
-BOOL         g_fNoSound = FALSE;
-BOOL         g_fNoMusic = FALSE;
-
-#ifdef PAL_HAS_NATIVEMIDI
-BOOL         g_fUseMidi = FALSE;
-#endif
-
-static BOOL  g_fUseWav = FALSE;
-
-#ifdef __SYMBIAN32__
-INT          g_iVolume  = SDL_MIX_MAXVOLUME * 0.1;
-#endif
-
-typedef struct tagSNDPLAYER
+typedef struct tagWAVESPEC
 {
-   FILE                     *mkf;
-   SDL_AudioSpec             spec;
-   SDL_mutex                *mtx;
-   LPBYTE                    buf[2], pos[2];
-   INT                       audio_len[2];
-#ifdef PAL_HAS_CD
-   SDL_CD                   *pCD;
+	int                 size;
+	int                 freq;
+#if SDL_VERSION_ATLEAST(2,0,0)
+	SDL_AudioFormat     format;
+#else
+	uint16_t            format;
 #endif
-#ifdef PAL_HAS_MP3
-   mad_data                 *pMP3;
-   BOOL                      fMP3Loop;
-   INT                       iCurrentMP3;
-   SDL_mutex                *lock;
-#endif
-} SNDPLAYER;
+	uint8_t             channels;
+	uint8_t             align;
+} WAVESPEC;
 
-static SNDPLAYER gSndPlayer;
+typedef const void * (*SoundLoader)(LPCBYTE, DWORD, WAVESPEC *);
+typedef int(*ResampleMixer)(void *[2], const void *, const WAVESPEC *, void *, int, const void **);
 
-static SDL_AudioSpec *
-SOUND_LoadVOCFromBuffer(
-   LPCBYTE                lpVOC,
-   DWORD                  dwLen,
-   SDL_AudioSpec         *lpSpec,
-   LPBYTE                *lppBuffer
+typedef struct tagWAVEDATA
+{
+	struct tagWAVEDATA *next;
+
+	void               *resampler[2];	/* The resampler used for sound data */
+	ResampleMixer       ResampleMix;
+	const void         *base;
+	const void         *current;
+	const void         *end;
+	WAVESPEC            spec;
+} WAVEDATA;
+
+typedef struct tagSOUNDPLAYER
+{
+	AUDIOPLAYER_COMMONS;
+
+	FILE               *mkf;		/* File pointer to the MKF file */
+	SoundLoader         LoadSound;	/* The function pointer for load WAVE/VOC data */
+	WAVEDATA            soundlist;
+	int                 cursounds;
+} SOUNDPLAYER, *LPSOUNDPLAYER;
+
+static const void *
+SOUND_LoadWAVEData(
+	LPCBYTE                lpData,
+	DWORD                  dwLen,
+	WAVESPEC              *lpSpec
 )
 /*++
   Purpose:
 
-    Load a VOC file in a buffer. Currently supports type 01 block only.
+    Return the WAVE data pointer inside the input buffer.
 
   Parameters:
 
-    [IN]  lpVOC - pointer to the buffer of the VOC file.
+    [IN]  lpData - pointer to the buffer of the WAVE file.
+
+    [IN]  dwLen - length of the buffer of the WAVE file.
+
+    [OUT] lpSpec - pointer to the SDL_AudioSpec structure, which contains
+                    some basic information about the WAVE file.
+
+  Return value:
+
+    Pointer to the WAVE data inside the input buffer, NULL if failed.
+--*/
+{
+	const RIFFHeader      *lpRiff   = (const RIFFHeader *)lpData;
+	const RIFFChunkHeader *lpChunk  = NULL;
+	const WAVEFormatPCM   *lpFormat = NULL;
+	const uint8_t         *lpWaveData = NULL;
+	uint32_t len,type;
+
+	if (dwLen < sizeof(RIFFHeader) || SDL_SwapLE32(lpRiff->signature) != RIFF_RIFF ||
+		SDL_SwapLE32(lpRiff->type) != RIFF_WAVE || dwLen < SDL_SwapLE32(lpRiff->length) + 8)
+	{
+		return NULL;
+	}
+
+	lpChunk = (const RIFFChunkHeader *)(lpRiff + 1); dwLen -= sizeof(RIFFHeader);
+	while (dwLen >= sizeof(RIFFChunkHeader))
+	{
+        len = SDL_SwapLE32(lpChunk->length);
+        type = SDL_SwapLE32(lpChunk->type);
+		if (dwLen >= sizeof(RIFFChunkHeader) + len)
+			dwLen -= sizeof(RIFFChunkHeader) + len;
+		else
+			return NULL;
+
+		switch (type)
+		{
+		case WAVE_fmt:
+			lpFormat = (const WAVEFormatPCM *)(lpChunk + 1);
+			if (len != sizeof(WAVEFormatPCM) || lpFormat->wFormatTag != SDL_SwapLE16(0x0001))
+			{
+				return NULL;
+			}
+			break;
+		case WAVE_data:
+			lpWaveData = (const uint8_t *)(lpChunk + 1);
+			dwLen = 0;
+			break;
+		}
+		lpChunk = (const RIFFChunkHeader *)((const uint8_t *)(lpChunk + 1) + len);
+	}
+
+	if (lpFormat == NULL || lpWaveData == NULL)
+	{
+		return NULL;
+	}
+
+	lpSpec->channels = SDL_SwapLE16(lpFormat->nChannels);
+	lpSpec->format = (SDL_SwapLE16(lpFormat->wBitsPerSample) == 16) ? AUDIO_S16 : AUDIO_U8;
+	lpSpec->freq = SDL_SwapLE32(lpFormat->nSamplesPerSec);
+	lpSpec->size = len;
+	lpSpec->align = SDL_SwapLE16(lpFormat->nChannels) * SDL_SwapLE16(lpFormat->wBitsPerSample) >> 3;
+
+	return lpWaveData;
+}
+
+typedef struct tagVOCHEADER
+{
+	char    signature[0x14];	/* "Creative Voice File\x1A" */
+	WORD    data_offset;		/* little endian */
+	WORD	version;
+	WORD	version_checksum;
+} VOCHEADER, *LPVOCHEADER;
+typedef const VOCHEADER *LPCVOCHEADER;
+
+static const void *
+SOUND_LoadVOCData(
+	LPCBYTE                lpData,
+	DWORD                  dwLen,
+	WAVESPEC              *lpSpec
+)
+/*++
+  Purpose:
+
+    Return the VOC data pointer inside the input buffer. Currently supports type 01 block only.
+
+  Parameters:
+
+    [IN]  lpData - pointer to the buffer of the VOC file.
 
     [IN]  dwLen - length of the buffer of the VOC file.
 
     [OUT] lpSpec - pointer to the SDL_AudioSpec structure, which contains
                    some basic information about the VOC file.
 
-    [OUT] lppBuffer - the output buffer.
-
   Return value:
 
-    Pointer to the SDL_AudioSpec structure, NULL if failed.
+    Pointer to the WAVE data inside the input buffer, NULL if failed.
 
+    Reference: http://sox.sourceforge.net/AudioFormats-11.html
 --*/
 {
-   INT freq, len, x, i, l;
-   SDL_RWops *rw;
+	LPCVOCHEADER lpVOC = (LPCVOCHEADER)lpData;
 
-   if (g_fUseWav)
-   {
-      rw = SDL_RWFromConstMem(lpVOC, dwLen);
-      if (rw == NULL) return NULL;
+	if (dwLen < sizeof(VOCHEADER) || memcmp(lpVOC->signature, "Creative Voice File\x1A", 0x14) || SDL_SwapLE16(lpVOC->data_offset) >= dwLen)
+	{
+		return NULL;
+	}
 
-      len = dwLen;
+	lpData += SDL_SwapLE16(lpVOC->data_offset);
+	dwLen -= SDL_SwapLE16(lpVOC->data_offset);
 
-      SDL_LoadWAV_RW(rw, 1, lpSpec, lppBuffer, (Uint32 *)&len);
-      lpSpec->size = len;
+	while (dwLen && *lpData)
+	{
+		DWORD len;
+		if (dwLen >= 4)
+		{
+			len = lpData[1] | (lpData[2] << 8) | (lpData[3] << 16);
+			if (dwLen >= len + 4)
+				dwLen -= len + 4;
+			else
+				return NULL;
+		}
+		else
+		{
+			return NULL;
+		}
+		if (*lpData == 0x01)
+		{
+			if (lpData[5] != 0) return NULL;	/* Only 8-bit is supported */
 
-      return lpSpec;
-   }
-   else
-   {
-      //
-      // Skip header
-      //
-      lpVOC += 0x1B;
+			lpSpec->format = AUDIO_U8;
+			lpSpec->channels = 1;
+			lpSpec->freq = ((1000000 / (256 - lpData[4]) + 99) / 100) * 100; /* Round to next 100Hz */
+			lpSpec->size = len - 2;
+			lpSpec->align = 1;
 
-      //
-      // Length is 3 bytes long
-      //
-      len = (lpVOC[0] | (lpVOC[1] << 8) | (lpVOC[2] << 16)) - 2;
-      lpVOC += 3;
+			return lpData + 6;
+		}
+		else
+		{
+			lpData += len + 4;
+		}
+	}
 
-      //
-      // One byte for frequency
-      //
-      freq = 1000000 / (256 - *lpVOC);
-
-#if 1
-
-      lpVOC += 2;
-
-      //
-      // Convert the sample manually, as SDL doesn't like "strange" sample rates.
-      //
-      x = (INT)(len * ((FLOAT)PAL_SAMPLE_RATE / freq));
-
-      *lppBuffer = (LPBYTE)calloc(1, x);
-      if (*lppBuffer == NULL)
-      {
-         return NULL;
-      }
-      for (i = 0; i < x; i++)
-      {
-         l = (INT)(i * (freq / (FLOAT)PAL_SAMPLE_RATE));
-         if (l >= len)
-         {
-            l = len - 1;
-         }
-         (*lppBuffer)[i] = lpVOC[l];
-      }
-
-      lpSpec->channels = 1;
-      lpSpec->format = AUDIO_U8;
-      lpSpec->freq = PAL_SAMPLE_RATE;
-      lpSpec->size = x;
-
-#else
-
-      *lppBuffer = (unsigned char *)malloc(len);
-      if (*lppBuffer == NULL)
-      {
-         return NULL;
-      }
-
-      lpSpec->channels = 1;
-      lpSpec->format = AUDIO_U8;
-      lpSpec->freq = freq;
-      lpSpec->size = len;
-
-      lpVOC += 2;
-      memcpy(*lppBuffer, lpVOC, len);
-
-#endif
-
-      return lpSpec;
-   }
+	return NULL;
 }
 
-static VOID SDLCALL
-SOUND_FillAudio(
-   LPVOID          udata,
-   LPBYTE          stream,
-   INT             len
+static int
+SOUND_ResampleMix_U8_Mono_Mono(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
 )
 /*++
   Purpose:
 
-    SDL sound callback function.
+    Resample 8-bit unsigned mono PCM data into 16-bit signed (native-endian) mono PCM data.
 
   Parameters:
 
-    [IN]  udata - pointer to user-defined parameters (Not used).
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size;
+	const uint8_t * src = (const uint8_t *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+			resampler_write_sample(resampler[0], (*src++ ^ 0x80) << 8);
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_U8_Mono_Stereo(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 8-bit unsigned mono PCM data into 16-bit signed (native-endian) stereo PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size;
+	const uint8_t * src = (const uint8_t *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen >> 1, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+			resampler_write_sample(resampler[0], (*src++ ^ 0x80) << 8);
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			dst[0] = dst[1] = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short); dst += 2;
+			resampler_remove_sample(resampler[0]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_U8_Stereo_Mono(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 8-bit unsigned stereo PCM data into 16-bit signed (native-endian) mono PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 1;
+	const uint8_t * src = (const uint8_t *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+		{
+			resampler_write_sample(resampler[0], (*src++ ^ 0x80) << 8);
+			resampler_write_sample(resampler[1], (*src++ ^ 0x80) << 8);
+		}
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (((resampler_get_sample(resampler[0]) >> 8) + (resampler_get_sample(resampler[1]) >> 8)) >> 1) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+			resampler_remove_sample(resampler[1]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_U8_Stereo_Stereo(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 8-bit unsigned stereo PCM data into 16-bit signed (native-endian) stereo PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 1;
+	const uint8_t * src = (const uint8_t *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen >> 1, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+		{
+			resampler_write_sample(resampler[0], (*src++ ^ 0x80) << 8);
+			resampler_write_sample(resampler[1], (*src++ ^ 0x80) << 8);
+		}
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample;
+			sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			sample = (resampler_get_sample(resampler[1]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+			resampler_remove_sample(resampler[1]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_S16_Mono_Mono(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 16-bit signed (little-endian) mono PCM data into 16-bit signed (native-endian) mono PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 1;
+	const short * src = (const short *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+			resampler_write_sample(resampler[0], SDL_SwapLE16(*src++));
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_S16_Mono_Stereo(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 16-bit signed (little-endian) mono PCM data into 16-bit signed (native-endian) stereo PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 1;
+	const short * src = (const short *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen >> 1, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+			resampler_write_sample(resampler[0], SDL_SwapLE16(*src++));
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			dst[0] = dst[1] = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short); dst += 2;
+			resampler_remove_sample(resampler[0]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_S16_Stereo_Mono(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 16-bit signed (little-endian) stereo PCM data into 16-bit signed (native-endian) mono PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 2;
+	const short * src = (const short *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+		{
+			resampler_write_sample(resampler[0], SDL_SwapLE16(*src++));
+			resampler_write_sample(resampler[1], SDL_SwapLE16(*src++));
+		}
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample = (((resampler_get_sample(resampler[0]) >> 8) + (resampler_get_sample(resampler[1]) >> 8)) >> 1) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+			resampler_remove_sample(resampler[1]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+static int
+SOUND_ResampleMix_S16_Stereo_Stereo(
+	void                  *resampler[2],
+	const void            *lpData,
+	const WAVESPEC        *lpSpec,
+	void                  *lpBuffer,
+	int                    iBufLen,
+	const void           **llpData
+)
+/*++
+  Purpose:
+
+    Resample 16-bit signed (little-endian) stereo PCM data into 16-bit signed (native-endian) stereo PCM data.
+
+  Parameters:
+
+    [IN]  resampler - array of pointers to the resampler instance.
+
+    [IN]  lpData - pointer to the buffer of the input PCM data.
+
+    [IN]  lpSpec - pointer to the WAVESPEC structure, which contains
+                   some basic information about the input PCM data.
+
+    [IN]  lpBuffer - pointer of the buffer of the output PCM data.
+
+    [IN]  iBufLen - length of the buffer of the output PCM data.
+
+    [OUT] llpData - pointer to receive the pointer of remaining input PCM data.
+
+  Return value:
+
+    The number of output buffer used, in bytes.
+--*/
+{
+	int src_samples = lpSpec->size >> 2;
+	const short * src = (const short *)lpData;
+	short *dst = (short *)lpBuffer;
+	int channel_len = iBufLen >> 1, total_bytes = 0;
+
+	while (total_bytes < channel_len && src_samples > 0)
+	{
+		int j, to_write = resampler_get_free_count(resampler[0]);
+		if (to_write > src_samples) to_write = src_samples;
+		for (j = 0; j < to_write; j++)
+		{
+			resampler_write_sample(resampler[0], SDL_SwapLE16(*src++));
+			resampler_write_sample(resampler[1], SDL_SwapLE16(*src++));
+		}
+		src_samples -= to_write;
+		while (total_bytes < channel_len && resampler_get_sample_count(resampler[0]) > 0)
+		{
+			int sample;
+			sample = (resampler_get_sample(resampler[0]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			sample = (resampler_get_sample(resampler[1]) >> 8) + *dst;
+			*dst++ = (sample <= 32767) ? ((sample >= -32768) ? sample : -32768) : 32767;
+			total_bytes += sizeof(short);
+			resampler_remove_sample(resampler[0]);
+			resampler_remove_sample(resampler[1]);
+		}
+	}
+
+	if (llpData) *llpData = src;
+	return total_bytes;
+}
+
+
+static BOOL
+SOUND_Play(
+   VOID  *object,
+   INT    iSoundNum,
+   BOOL   fLoop,
+   FLOAT  flFadeTime
+)
+/*++
+  Purpose:
+
+    Play a sound in voc.mkf/sounds.mkf file.
+
+  Parameters:
+
+    [IN]  object - Pointer to the SOUNDPLAYER instance.
+    [IN]  iSoundNum - number of the sound; the absolute value is used.
+    [IN]  fLoop - Not used, should be zero.
+    [IN]  flFadeTime - Not used, should be zero.
+
+  Return value:
+
+    None.
+
+--*/
+{
+	LPSOUNDPLAYER  player = (LPSOUNDPLAYER)object;
+	const SDL_AudioSpec *devspec = AUDIO_GetDeviceSpec();
+	WAVESPEC         wavespec;
+	ResampleMixer    mixer;
+	WAVEDATA        *cursnd;
+	void            *buf;
+	const void      *snddata;
+	int              len, i;
+
+	//
+	// Check for NULL pointer.
+	//
+	if (player == NULL)
+	{
+		return FALSE;
+	}
+
+	//
+	// Get the length of the sound file.
+	//
+	len = PAL_MKFGetChunkSize(iSoundNum, player->mkf);
+	if (len <= 0)
+	{
+		return FALSE;
+	}
+
+	buf = malloc(len);
+	if (buf == NULL)
+	{
+		return FALSE;
+	}
+
+	//
+	// Read the sound file from the MKF archive.
+	//
+	PAL_MKFReadChunk(buf, len, iSoundNum, player->mkf);
+
+	snddata = player->LoadSound(buf, len, &wavespec);
+	if (snddata == NULL)
+	{
+		free(buf);
+		return FALSE;
+	}
+
+	if (wavespec.channels == 1 && devspec->channels == 1)
+		mixer = (wavespec.format == AUDIO_S16) ? SOUND_ResampleMix_S16_Mono_Mono : SOUND_ResampleMix_U8_Mono_Mono;
+	else if (wavespec.channels == 1 && devspec->channels == 2)
+		mixer = (wavespec.format == AUDIO_S16) ? SOUND_ResampleMix_S16_Mono_Stereo : SOUND_ResampleMix_U8_Mono_Stereo;
+	else if (wavespec.channels == 2 && devspec->channels == 1)
+		mixer = (wavespec.format == AUDIO_S16) ? SOUND_ResampleMix_S16_Stereo_Mono : SOUND_ResampleMix_U8_Stereo_Mono;
+	else if (wavespec.channels == 2 && devspec->channels == 2)
+		mixer = (wavespec.format == AUDIO_S16) ? SOUND_ResampleMix_S16_Stereo_Stereo : SOUND_ResampleMix_U8_Stereo_Stereo;
+	else
+	{
+		free(buf);
+		return FALSE;
+	}
+
+	AUDIO_Lock();
+
+	cursnd = &player->soundlist;
+	while (cursnd->next && cursnd->base)
+		cursnd = cursnd->next;
+	if (cursnd->base)
+	{
+		WAVEDATA *obj = (WAVEDATA *)malloc(sizeof(WAVEDATA));
+		memset(obj, 0, sizeof(WAVEDATA));
+		cursnd->next = obj;
+		cursnd = cursnd->next;
+	}
+
+	for (i = 0; i < wavespec.channels; i++)
+	{
+		if (!cursnd->resampler[i])
+			cursnd->resampler[i] = resampler_create();
+		else
+			resampler_clear(cursnd->resampler[i]);
+		resampler_set_quality(cursnd->resampler[i], AUDIO_IsIntegerConversion(wavespec.freq) ? RESAMPLER_QUALITY_MIN : gConfig.iResampleQuality);
+		resampler_set_rate(cursnd->resampler[i], (double)wavespec.freq / (double)devspec->freq);
+	}
+
+	cursnd->base = buf;
+	cursnd->current = snddata;
+	cursnd->end = (const uint8_t *)snddata + wavespec.size;
+	cursnd->spec = wavespec;
+	cursnd->ResampleMix = mixer;
+	player->cursounds++;
+
+	AUDIO_Unlock();
+
+	return TRUE;
+}
+
+VOID
+SOUND_Shutdown(
+	VOID     *object
+)
+/*++
+  Purpose:
+
+    Shutdown the sound subsystem.
+
+  Parameters:
+
+    None.
+
+  Return value:
+
+    None.
+
+--*/
+{
+	LPSOUNDPLAYER player = (LPSOUNDPLAYER)object;
+	if (player)
+	{
+		WAVEDATA *cursnd = &player->soundlist;
+		do
+		{
+			if (cursnd->resampler[0]) resampler_delete(cursnd->resampler[0]);
+			if (cursnd->resampler[1]) resampler_delete(cursnd->resampler[1]);
+			if (cursnd->base) free((void *)cursnd->base);
+		} while ((cursnd = cursnd->next) != NULL);
+		cursnd = player->soundlist.next;
+		while (cursnd)
+		{
+			WAVEDATA *old = cursnd;
+			cursnd = cursnd->next;
+			free(old);
+		}
+		if (player->mkf) fclose(player->mkf);
+	}
+}
+
+static VOID
+SOUND_FillBuffer(
+	VOID      *object,
+	LPBYTE     stream,
+	INT        len
+)
+/*++
+  Purpose:
+
+    Fill the background music into the sound buffer. Called by the SDL sound
+    callback function only (audio.c: AUDIO_FillBuffer).
+
+  Parameters:
 
     [OUT] stream - pointer to the stream buffer.
 
@@ -206,227 +906,38 @@ SOUND_FillAudio(
 
 --*/
 {
-   int        i;
-
-#if SDL_VERSION_ATLEAST(2,0,0)
-   memset(stream, 0, len);
-#endif
-
-   //
-   // Play music
-   //
-   if (!g_fNoMusic)
-   {
-#ifdef PAL_HAS_MP3
-      SDL_mutexP(gSndPlayer.lock);
-
-      if (gSndPlayer.pMP3 != NULL)
-      {
-         mad_getSamples(gSndPlayer.pMP3, stream, len);
-
-         if (!mad_isPlaying(gSndPlayer.pMP3) && gSndPlayer.fMP3Loop)
-         {
-            mad_seek(gSndPlayer.pMP3, 0);
-            mad_start(gSndPlayer.pMP3);
-
-            mad_getSamples(gSndPlayer.pMP3, stream, len);
-         }
-      }
-
-      SDL_mutexV(gSndPlayer.lock);
-#endif
-      RIX_FillBuffer(stream, len);
-   }
-
-   //
-   // No current playing sound
-   //
-   if (g_fNoSound)
-   {
-      return;
-   }
-
-   SDL_mutexP(gSndPlayer.mtx);
-
-   for (i = 0; i < 2; i++)
-   {
-      //
-      // Only play if we have data left
-      //
-      if (gSndPlayer.buf[i] == NULL)
-      {
-         continue;
-      }
-
-      if (gSndPlayer.audio_len[i] == 0)
-      {
-         //
-         // Delete the audio buffer from memory
-         //
-         free(gSndPlayer.buf[i]);
-         gSndPlayer.buf[i] = NULL;
-         continue;
-      }
-
-      //
-      // Mix as much data as possible
-      //
-      len = (len > gSndPlayer.audio_len[i]) ? gSndPlayer.audio_len[i] : len;
-#ifdef __SYMBIAN32__
-      SDL_MixAudio(stream, gSndPlayer.pos[i], len, g_iVolume);
-#else
-      SDL_MixAudio(stream, gSndPlayer.pos[i], len, SDL_MIX_MAXVOLUME);
-#endif
-      gSndPlayer.pos[i] += len;
-      gSndPlayer.audio_len[i] -= len;
-   }
-   SDL_mutexV(gSndPlayer.mtx);
+	LPSOUNDPLAYER player = (LPSOUNDPLAYER)object;
+	if (player)
+	{
+		WAVEDATA *cursnd = &player->soundlist;
+		int sounds = 0;
+		do
+		{
+			if (cursnd->base)
+			{
+				cursnd->ResampleMix(cursnd->resampler, cursnd->current, &cursnd->spec, stream, len, &cursnd->current);
+				cursnd->spec.size = (const uint8_t *)cursnd->end - (const uint8_t *)cursnd->current;
+				if (cursnd->spec.size < cursnd->spec.align)
+				{
+					free((void *)cursnd->base);
+					cursnd->base = cursnd->current = cursnd->end = NULL;
+					player->cursounds--;
+				}
+				else
+					sounds++;
+			}
+		} while ((cursnd = cursnd->next) && sounds < player->cursounds);
+	}
 }
 
-INT
-SOUND_OpenAudio(
-   VOID
+LPAUDIOPLAYER
+SOUND_Init(
+	VOID
 )
 /*++
   Purpose:
 
-    Initialize the audio subsystem.
-
-  Parameters:
-
-    None.
-
-  Return value:
-
-    0 if succeed, others if failed.
-
---*/
-{
-   SDL_AudioSpec spec;
-
-   if (gSndOpened)
-   {
-      //
-      // Already opened
-      //
-      return -1;
-   }
-
-   gSndOpened = FALSE;
-
-   //
-   // Load the MKF file.
-   //
-   gSndPlayer.mkf = UTIL_OpenFile("voc.mkf");
-   if (gSndPlayer.mkf == NULL)
-   {
-      gSndPlayer.mkf = UTIL_OpenFile("sounds.mkf");
-      if (gSndPlayer.mkf == NULL)
-      {
-         return -2;
-      }
-      g_fUseWav = TRUE;
-   }
-   else
-   {
-      g_fUseWav = FALSE;
-   }
-
-   //
-   // Open the sound subsystem.
-   //
-   gSndPlayer.spec.freq = PAL_SAMPLE_RATE;
-   gSndPlayer.spec.format = AUDIO_S16;
-   gSndPlayer.spec.channels = PAL_CHANNELS;
-   gSndPlayer.spec.samples = 1024;
-   gSndPlayer.spec.callback = SOUND_FillAudio;
-
-   if (SDL_OpenAudio(&gSndPlayer.spec, &spec) < 0)
-   {
-      //
-      // Failed
-      //
-      return -3;
-   }
-
-   memcpy(&gSndPlayer.spec, &spec, sizeof(SDL_AudioSpec));
-
-   gSndPlayer.buf[0] = NULL;
-   gSndPlayer.pos[0] = NULL;
-   gSndPlayer.audio_len[0] = 0;
-
-   gSndPlayer.buf[1] = NULL;
-   gSndPlayer.pos[1] = NULL;
-   gSndPlayer.audio_len[1] = 0;
-
-   gSndPlayer.mtx = SDL_CreateMutex();
-   gSndOpened = TRUE;
-
-   //
-   // Initialize the music subsystem.
-   //
-   RIX_Init(va("%s%s", PAL_PREFIX, "mus.mkf"));
-
-#ifdef PAL_HAS_CD
-   //
-   // Initialize the CD audio.
-   //
-   {
-      int i;
-      gSndPlayer.pCD = NULL;
-
-      for (i = 0; i < SDL_CDNumDrives(); i++)
-      {
-         gSndPlayer.pCD = SDL_CDOpen(i);
-         if (gSndPlayer.pCD != NULL)
-         {
-            if (!CD_INDRIVE(SDL_CDStatus(gSndPlayer.pCD)))
-            {
-               SDL_CDClose(gSndPlayer.pCD);
-               gSndPlayer.pCD = NULL;
-            }
-            else
-            {
-               break;
-            }
-         }
-      }
-   }
-#endif
-
-#ifdef PAL_HAS_MP3
-   gSndPlayer.iCurrentMP3 = -1;
-   gSndPlayer.lock = SDL_CreateMutex();
-#endif
-
-   //
-   // Let the callback function run so that musics will be played.
-   //
-   SDL_PauseAudio(0);
-
-   return 0;
-}
-
-#ifdef PSP
-void
-SOUND_ReloadVOC(
-	void
-)
-{
-   fclose(gSndPlayer.mkf);
-   gSndPlayer.mkf = UTIL_OpenFile("voc.mkf");
-   g_fUseWav = FALSE;
-}
-#endif
-
-VOID
-SOUND_CloseAudio(
-   VOID
-)
-/*++
-  Purpose:
-
-    Close the audio subsystem.
+    Initialize the sound subsystem.
 
   Parameters:
 
@@ -438,324 +949,40 @@ SOUND_CloseAudio(
 
 --*/
 {
-   SDL_mutexP(gSndPlayer.mtx);
-   SDL_CloseAudio();
+	char *mkfs[2];
+	SoundLoader func[2];
+	int i;
 
-   if (gSndPlayer.buf[0] != NULL)
-   {
-      free(gSndPlayer.buf[0]);
-      gSndPlayer.buf[0] = NULL;
-   }
+	if (gConfig.fIsWIN95)
+	{
+		mkfs[0] = "sounds.mkf"; func[0] = SOUND_LoadWAVEData;
+		mkfs[1] = "voc.mkf"; func[1] = SOUND_LoadVOCData;
+	}
+	else
+	{
+		mkfs[0] = "voc.mkf"; func[0] = SOUND_LoadVOCData;
+		mkfs[1] = "sounds.mkf"; func[1] = SOUND_LoadWAVEData;
+	}
 
-   if (gSndPlayer.buf[1] != NULL)
-   {
-      free(gSndPlayer.buf[1]);
-      gSndPlayer.buf[1] = NULL;
-   }
+	for (i = 0; i < 2; i++)
+	{
+		FILE *mkf = UTIL_OpenFile(mkfs[i]);
+		if (mkf)
+		{
+			LPSOUNDPLAYER player = (LPSOUNDPLAYER)malloc(sizeof(SOUNDPLAYER));
+			memset(&player->soundlist, 0, sizeof(WAVEDATA));
+			player->Play = SOUND_Play;
+			player->FillBuffer = SOUND_FillBuffer;
+			player->Shutdown = SOUND_Shutdown;
 
-   if (gSndPlayer.mkf != NULL)
-   {
-      fclose(gSndPlayer.mkf);
-      gSndPlayer.mkf = NULL;
-   }
+			player->LoadSound = func[i];
+			player->mkf = mkf;
+			player->soundlist.resampler[0] = resampler_create();
+			player->soundlist.resampler[1] = resampler_create();
+			player->cursounds = 0;
+			return (LPAUDIOPLAYER)player;
+		}
+	}
 
-   SDL_DestroyMutex(gSndPlayer.mtx);
-
-#ifdef PAL_HAS_MP3
-   SDL_mutexP(gSndPlayer.lock);
-
-   if (gSndPlayer.pMP3 != NULL)
-   {
-      mad_stop(gSndPlayer.pMP3);
-      mad_closeFile(gSndPlayer.pMP3);
-      gSndPlayer.pMP3 = NULL;
-   }
-
-   SDL_DestroyMutex(gSndPlayer.lock);
-#endif
-
-   RIX_Shutdown();
-
-#ifdef PAL_HAS_CD
-   if (gSndPlayer.pCD != NULL)
-   {
-      SOUND_PlayCDA(-1);
-      SDL_CDClose(gSndPlayer.pCD);
-   }
-#endif
-
-#ifdef PAL_HAS_NATIVEMIDI
-   MIDI_Play(0, FALSE);
-#endif
-}
-
-#ifdef __SYMBIAN32__
-
-VOID
-SOUND_AdjustVolume(
-   INT    iDirectory
-)
-/*++
-  Purpose:
-
-    SDL sound volume adjust function.
-
-  Parameters:
-
-    [IN]  iDirectory - value, Increase (>0) or decrease (<=0) 3% volume.
-
-  Return value:
-
-    None.
-
---*/
-{
-   if (iDirectory > 0)
-   {
-      if (g_iVolume <= SDL_MIX_MAXVOLUME)
-      {
-         g_iVolume += SDL_MIX_MAXVOLUME * 0.03;
-      }
-      else
-      {
-         g_iVolume = SDL_MIX_MAXVOLUME;
-      }
-   }
-   else
-   {
-      if (g_iVolume > 0)
-      {
-         g_iVolume -= SDL_MIX_MAXVOLUME * 0.03;
-      }
-      else
-      {
-         g_iVolume = 0;
-      }
-   }
-}
-
-#endif
-
-VOID
-SOUND_PlayChannel(
-   INT    iSoundNum,
-   INT    iChannel
-)
-/*++
-  Purpose:
-
-    Play a sound in voc.mkf file.
-
-  Parameters:
-
-    [IN]  iSoundNum - number of the sound.
-
-    [IN]  iChannel - the number of channel (0 or 1).
-
-  Return value:
-
-    None.
-
---*/
-{
-   SDL_AudioCVT    wavecvt;
-   SDL_AudioSpec   wavespec;
-   LPBYTE          buf, bufdec;
-   UINT            samplesize;
-   int             len;
-
-   if (!gSndOpened || g_fNoSound)
-   {
-      return;
-   }
-
-   //
-   // Stop playing current sound.
-   //
-   SDL_mutexP(gSndPlayer.mtx);
-   if (gSndPlayer.buf[iChannel] != NULL)
-   {
-      LPBYTE p = gSndPlayer.buf[iChannel];
-      gSndPlayer.buf[iChannel] = NULL;
-      free(p);
-   }
-   SDL_mutexV(gSndPlayer.mtx);
-
-   if (iSoundNum < 0)
-   {
-      return;
-   }
-
-   //
-   // Get the length of the sound file.
-   //
-   len = PAL_MKFGetChunkSize(iSoundNum, gSndPlayer.mkf);
-   if (len <= 0)
-   {
-      return;
-   }
-
-   buf = (LPBYTE)calloc(len, 1);
-   if (buf == NULL)
-   {
-      return;
-   }
-
-   //
-   // Read the sound file from the MKF archive.
-   //
-   PAL_MKFReadChunk(buf, len, iSoundNum, gSndPlayer.mkf);
-
-   SOUND_LoadVOCFromBuffer(buf, len, &wavespec, &bufdec);
-   free(buf);
-
-   //
-   // Build the audio converter and create conversion buffers
-   //
-   if (SDL_BuildAudioCVT(&wavecvt, wavespec.format, wavespec.channels, wavespec.freq,
-      gSndPlayer.spec.format, gSndPlayer.spec.channels, gSndPlayer.spec.freq) < 0)
-   {
-      free(bufdec);
-      return;
-   }
-
-   samplesize = ((wavespec.format & 0xFF) / 8) * wavespec.channels;
-   wavecvt.len = wavespec.size & ~(samplesize - 1);
-   wavecvt.buf = (LPBYTE)malloc(wavecvt.len * wavecvt.len_mult);
-   if (wavecvt.buf == NULL)
-   {
-      free(bufdec);
-      return;
-   }
-   memcpy(wavecvt.buf, bufdec, wavespec.size);
-   if (g_fUseWav)
-   {
-      SDL_FreeWAV(bufdec);
-   }
-   else
-   {
-      free(bufdec);
-   }
-
-   //
-   // Run the audio converter
-   //
-   if (SDL_ConvertAudio(&wavecvt) < 0)
-   {
-      return;
-   }
-
-   SDL_mutexP(gSndPlayer.mtx);
-   if (gSndPlayer.buf[iChannel] != NULL)
-   {
-	   LPBYTE p = gSndPlayer.buf[iChannel];
-	   gSndPlayer.buf[iChannel] = NULL;
-	   free(p);
-   }
-   gSndPlayer.buf[iChannel] = wavecvt.buf;
-   gSndPlayer.audio_len[iChannel] = wavecvt.len * wavecvt.len_mult;
-   gSndPlayer.pos[iChannel] = wavecvt.buf;
-   SDL_mutexV(gSndPlayer.mtx);
-}
-
-VOID
-PAL_PlayMUS(
-   INT       iNumRIX,
-   BOOL      fLoop,
-   FLOAT     flFadeTime
-)
-{
-#ifdef PAL_HAS_NATIVEMIDI
-   if (g_fUseMidi)
-   {
-      MIDI_Play(iNumRIX, fLoop);
-      return;
-   }
-#endif
-
-#ifdef PAL_HAS_MP3
-   SDL_mutexP(gSndPlayer.lock);
-
-   if (gSndPlayer.pMP3 != NULL)
-   {
-      if (iNumRIX == gSndPlayer.iCurrentMP3 && !g_fNoMusic)
-      {
-         SDL_mutexV(gSndPlayer.lock);
-         return;
-      }
-
-      mad_stop(gSndPlayer.pMP3);
-      mad_closeFile(gSndPlayer.pMP3);
-
-      gSndPlayer.pMP3 = NULL;
-   }
-
-   SDL_mutexV(gSndPlayer.lock);
-
-   gSndPlayer.iCurrentMP3 = -1;
-
-   if (iNumRIX > 0)
-   {
-      SDL_mutexP(gSndPlayer.lock);
-
-      gSndPlayer.pMP3 = mad_openFile(va("%s/mp3/%.2d.mp3", PAL_PREFIX, iNumRIX), &gSndPlayer.spec);
-      if (gSndPlayer.pMP3 != NULL)
-      {
-         RIX_Play(0, FALSE, flFadeTime);
-
-         mad_start(gSndPlayer.pMP3);
-         gSndPlayer.fMP3Loop = fLoop;
-         gSndPlayer.iCurrentMP3 = iNumRIX;
-         SDL_mutexV(gSndPlayer.lock);
-
-         return;
-      }
-
-      SDL_mutexV(gSndPlayer.lock);
-   }
-#endif
-
-   RIX_Play(iNumRIX, fLoop, flFadeTime);
-}
-
-BOOL
-SOUND_PlayCDA(
-   INT    iNumTrack
-)
-/*++
-  Purpose:
-
-    Play a CD Audio Track.
-
-  Parameters:
-
-    [IN]  iNumTrack - number of the CD Audio Track.
-
-  Return value:
-
-    TRUE if the track can be played, FALSE if not.
-
---*/
-{
-#ifdef PAL_HAS_CD
-   if (gSndPlayer.pCD != NULL)
-   {
-      if (CD_INDRIVE(SDL_CDStatus(gSndPlayer.pCD)))
-      {
-         SDL_CDStop(gSndPlayer.pCD);
-
-         if (iNumTrack != -1)
-         {
-            PAL_PlayMUS(-1, FALSE, 0);
-
-            if (SDL_CDPlayTracks(gSndPlayer.pCD, iNumTrack - 1, 0, 1, 0) == 0)
-            {
-               return TRUE;
-            }
-         }
-      }
-   }
-#endif
-
-   return FALSE;
+	return NULL;
 }

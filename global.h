@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -23,13 +24,9 @@
 #define GLOBAL_H
 
 #include "common.h"
+#include "palcommon.h"
 #include "map.h"
 #include "ui.h"
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 //
 // SOME NOTES ON "AUTO SCRIPT" AND "TRIGGER SCRIPT":
@@ -39,49 +36,6 @@ extern "C"
 // Trigger scripts are only executed when the event is triggered (player touched
 // an event object, player triggered an event script by pressing Spacebar).
 //
-
-// maximum number of players in party
-#define     MAX_PLAYERS_IN_PARTY         3
-
-// total number of possible player roles
-#define     MAX_PLAYER_ROLES             6
-
-// totally number of playable player roles
-#define     MAX_PLAYABLE_PLAYER_ROLES    5
-
-// maximum entries of inventory
-#define     MAX_INVENTORY                256
-
-// maximum items in a store
-#define     MAX_STORE_ITEM               9
-
-// total number of magic attributes
-#define     NUM_MAGIC_ELEMENTAL          5
-
-// maximum number of enemies in a team
-#define     MAX_ENEMIES_IN_TEAM          5
-
-// maximum number of equipments for a player
-#define     MAX_PLAYER_EQUIPMENTS        6
-
-// maximum number of magics for a player
-#define     MAX_PLAYER_MAGICS            32
-
-// maximum number of scenes
-#define     MAX_SCENES                   300
-
-// maximum number of objects
-#define     MAX_OBJECTS                  600
-
-// maximum number of event objects (should be somewhat more than the original,
-// as there are some modified versions which has more)
-#define     MAX_EVENT_OBJECTS            5500
-
-// maximum number of effective poisons to players
-#define     MAX_POISONS                  16
-
-// maximum number of level
-#define     MAX_LEVELS                   99
 
 // status of characters
 typedef enum tagSTATUS
@@ -189,17 +143,26 @@ typedef enum tagITEMFLAG
 } ITEMFLAG;
 
 // items
-typedef struct tagOBJECT_ITEM
+typedef struct tagOBJECT_ITEM_DOS
 {
    WORD         wBitmap;         // bitmap number in BALL.MKF
    WORD         wPrice;          // price
    WORD         wScriptOnUse;    // script executed when using this item
    WORD         wScriptOnEquip;  // script executed when equipping this item
    WORD         wScriptOnThrow;  // script executed when throwing this item to enemy
-#ifdef PAL_WIN95
-   WORD         wScriptDesc;     // description script
-#endif
    WORD         wFlags;          // flags
+} OBJECT_ITEM_DOS;
+
+// items
+typedef struct tagOBJECT_ITEM
+{
+	WORD         wBitmap;         // bitmap number in BALL.MKF
+	WORD         wPrice;          // price
+	WORD         wScriptOnUse;    // script executed when using this item
+	WORD         wScriptOnEquip;  // script executed when equipping this item
+	WORD         wScriptOnThrow;  // script executed when throwing this item to enemy
+	WORD         wScriptDesc;     // description script
+	WORD         wFlags;          // flags
 } OBJECT_ITEM;
 
 typedef enum tagMAGICFLAG
@@ -211,17 +174,26 @@ typedef enum tagMAGICFLAG
 } MAGICFLAG;
 
 // magics
-typedef struct tagOBJECT_MAGIC
+typedef struct tagOBJECT_MAGIC_DOS
 {
    WORD         wMagicNumber;      // magic number, according to DATA.MKF #3
    WORD         wReserved1;        // always zero
    WORD         wScriptOnSuccess;  // when magic succeed, execute script from here
    WORD         wScriptOnUse;      // when use this magic, execute script from here
-#ifdef PAL_WIN95
-   WORD         wScriptDesc;       // description script
-#endif
    WORD         wReserved2;        // always zero
    WORD         wFlags;            // flags
+} OBJECT_MAGIC_DOS;
+
+// magics
+typedef struct tagOBJECT_MAGIC
+{
+	WORD         wMagicNumber;      // magic number, according to DATA.MKF #3
+	WORD         wReserved1;        // always zero
+	WORD         wScriptOnSuccess;  // when magic succeed, execute script from here
+	WORD         wScriptOnUse;      // when use this magic, execute script from here
+	WORD         wScriptDesc;       // description script
+	WORD         wReserved2;        // always zero
+	WORD         wFlags;            // flags
 } OBJECT_MAGIC;
 
 // enemies
@@ -245,18 +217,24 @@ typedef struct tagOBJECT_POISON
    WORD         wEnemyScript;    // script executed when enemy has this poison (per round)
 } OBJECT_POISON;
 
+typedef union tagOBJECT_DOS
+{
+	WORD              rgwData[6];
+	OBJECT_PLAYER     player;
+	OBJECT_ITEM_DOS   item;
+	OBJECT_MAGIC_DOS  magic;
+	OBJECT_ENEMY      enemy;
+	OBJECT_POISON     poison;
+} OBJECT_DOS, *LPOBJECT_DOS;
+
 typedef union tagOBJECT
 {
-#ifdef PAL_WIN95
-   WORD              rgwData[7];
-#else
-   WORD              rgwData[6];
-#endif
-   OBJECT_PLAYER     player;
-   OBJECT_ITEM       item;
-   OBJECT_MAGIC      magic;
-   OBJECT_ENEMY      enemy;
-   OBJECT_POISON     poison;
+	WORD              rgwData[7];
+	OBJECT_PLAYER     player;
+	OBJECT_ITEM       item;
+	OBJECT_MAGIC      magic;
+	OBJECT_ENEMY      enemy;
+	OBJECT_POISON     poison;
 } OBJECT, *LPOBJECT;
 
 typedef struct tagSCRIPTENTRY
@@ -285,11 +263,11 @@ typedef struct tagENEMY
    WORD        wIdleAnimSpeed;      // speed of the animation when idle
    WORD        wActWaitFrames;      // FIXME: ???
    WORD        wYPosOffset;
-   WORD        wAttackSound;        // sound played when this enemy uses normal attack
-   WORD        wActionSound;        // FIXME: ???
-   WORD        wMagicSound;         // sound played when this enemy uses magic
-   WORD        wDeathSound;         // sound played when this enemy dies
-   WORD        wCallSound;          // sound played when entering the battle
+   SHORT       wAttackSound;        // sound played when this enemy uses normal attack
+   SHORT       wActionSound;        // FIXME: ???
+   SHORT       wMagicSound;         // sound played when this enemy uses magic
+   SHORT       wDeathSound;         // sound played when this enemy dies
+   SHORT       wCallSound;          // sound played when entering the battle
    WORD        wHealth;             // total HP of the enemy
    WORD        wExp;                // How many EXPs we'll get for beating this enemy
    WORD        wCash;               // how many cashes we'll get for beating this enemy
@@ -299,7 +277,7 @@ typedef struct tagENEMY
    WORD        wAttackEquivItem;    // equivalence item of this enemy's normal attack
    WORD        wAttackEquivItemRate;// chance for equivalence item
    WORD        wStealItem;          // which item we'll get when stealing from this enemy
-   USHORT      nStealItem;          // total amount of the items which can be stolen
+   WORD        nStealItem;          // total amount of the items which can be stolen
    WORD        wAttackStrength;     // normal attack strength
    WORD        wMagicStrength;      // magical attack strength
    WORD        wDefense;            // resistance to all kinds of attacking
@@ -377,9 +355,9 @@ typedef struct tagMAGIC
    WORD               wXOffset;
    WORD               wYOffset;
    WORD               wSummonEffect;         // summon effect sprite (in F.MKF)
-   WORD               wSpeed;                // speed of the effect
+   SHORT              wSpeed;                // speed of the effect
    WORD               wKeepEffect;           // FIXME: ???
-   WORD               wSoundDelay;           // delay of the SFX
+   WORD               wFireDelay;            // start frame of the magic fire stage
    WORD               wEffectTimes;          // total times of effect
    WORD               wShake;                // shake screen
    WORD               wWave;                 // wave screen
@@ -387,7 +365,7 @@ typedef struct tagMAGIC
    WORD               wCostMP;               // MP cost
    WORD               wBaseDamage;           // base damage
    WORD               wElemental;            // elemental (0 = No Elemental, last = poison)
-   WORD               wSound;                // sound played when using this magic
+   SHORT              wSound;                // sound played when using this magic
 } MAGIC, *LPMAGIC;
 
 typedef struct tagBATTLEFIELD
@@ -408,12 +386,15 @@ typedef struct tagLEVELUPMAGIC_ALL
    LEVELUPMAGIC       m[MAX_PLAYABLE_PLAYER_ROLES];
 } LEVELUPMAGIC_ALL, *LPLEVELUPMAGIC_ALL;
 
+typedef struct tagPALPOS
+{
+	WORD      x;
+	WORD      y;
+} PALPOS;
+
 typedef struct tagENEMYPOS
 {
-   struct {
-      WORD      x;
-      WORD      y;
-   } pos[MAX_ENEMIES_IN_TEAM][MAX_ENEMIES_IN_TEAM];
+	PALPOS pos[MAX_ENEMIES_IN_TEAM][MAX_ENEMIES_IN_TEAM];
 } ENEMYPOS, *LPENEMYPOS;
 
 // Exp. points needed for the next level
@@ -516,11 +497,12 @@ typedef struct tagGLOBALVARS
    FILES            f;
    GAMEDATA         g;
 
-   BYTE             bCurrentSaveSlot;    // current save slot (1-5)
    int              iCurMainMenuItem;    // current main menu item number
    int              iCurSystemMenuItem;  // current system menu item number
    int              iCurInvMenuItem;     // current inventory menu item number
    int              iCurPlayingRNG;      // current playing RNG animation
+   BYTE             bCurrentSaveSlot;    // current save slot (1-5)
+   BOOL             fInMainGame;         // TRUE if in main game
    BOOL             fGameStart;          // TRUE if the has just started
    BOOL             fEnteringScene;      // TRUE if entering a new scene
    BOOL             fNeedToFadeIn;       // TRUE if need to fade in when drawing scene
@@ -559,44 +541,23 @@ typedef struct tagGLOBALVARS
    ALLEXPERIENCE    Exp;                 // experience status
    POISONSTATUS     rgPoisonStatus[MAX_POISONS][MAX_PLAYABLE_PLAYER_ROLES]; // poison status
    INVENTORY        rgInventory[MAX_INVENTORY];  // inventory status
-#ifndef PAL_WIN95
    LPOBJECTDESC     lpObjectDesc;
-#endif
    DWORD            dwFrameNum;
 } GLOBALVARS, *LPGLOBALVARS;
 
-typedef struct tagSAVEDGAME
-{
-   WORD             wSavedTimes;             // saved times
-   WORD             wViewportX, wViewportY;  // viewport location
-   WORD             nPartyMember;            // number of members in party
-   WORD             wNumScene;               // scene number
-   WORD             wPaletteOffset;
-   WORD             wPartyDirection;         // party direction
-   WORD             wNumMusic;               // music number
-   WORD             wNumBattleMusic;         // battle music number
-   WORD             wNumBattleField;         // battle field number
-   WORD             wScreenWave;             // level of screen waving
-   WORD             wBattleSpeed;            // battle speed
-   WORD             wCollectValue;           // value of "collected" items
-   WORD             wLayer;
-   WORD             wChaseRange;
-   WORD             wChasespeedChangeCycles;
-   WORD             nFollower;
-   WORD             rgwReserved2[3];         // unused
-   DWORD            dwCash;                  // amount of cash
-   PARTY            rgParty[MAX_PLAYABLE_PLAYER_ROLES];       // player party
-   TRAIL            rgTrail[MAX_PLAYABLE_PLAYER_ROLES];       // player trail
-   ALLEXPERIENCE    Exp;                     // experience data
-   PLAYERROLES      PlayerRoles;
-   POISONSTATUS     rgPoisonStatus[MAX_POISONS][MAX_PLAYABLE_PLAYER_ROLES]; // poison status
-   INVENTORY        rgInventory[MAX_INVENTORY];               // inventory status
-   SCENE            rgScene[MAX_SCENES];
-   OBJECT           rgObject[MAX_OBJECTS];
-   EVENTOBJECT      rgEventObject[MAX_EVENT_OBJECTS];
-} SAVEDGAME, *LPSAVEDGAME;
+PAL_C_LINKAGE_BEGIN
 
-extern LPGLOBALVARS gpGlobals;
+extern GLOBALVARS * const gpGlobals;
+
+BOOL
+PAL_IsWINVersion(
+   BOOL *pfIsWIN95
+);
+
+CODEPAGE
+PAL_DetectCodePage(
+	const char *   filename
+);
 
 INT
 PAL_InitGlobals(
@@ -610,13 +571,18 @@ PAL_FreeGlobals(
 
 VOID
 PAL_SaveGame(
-   LPCSTR        szFileName,
+   int           iSaveSlot,
    WORD          wSavedTimes
 );
 
 VOID
 PAL_InitGameData(
    INT           iSaveSlot
+);
+
+INT
+PAL_CountItem(
+   WORD          wObjectID
 );
 
 BOOL
@@ -770,8 +736,6 @@ PAL_PlayerLevelUp(
    WORD          wNumLevel
 );
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
 
 #endif

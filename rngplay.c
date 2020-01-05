@@ -1,10 +1,8 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
-//
-// Portions based on PalLibrary by Lou Yihua <louyihua@21cn.com>.
-// Copyright (c) 2006-2007, Lou Yihua.
 //
 // This file is part of SDLPAL.
 //
@@ -20,6 +18,9 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//
+// Portions based on PalLibrary by Lou Yihua <louyihua@21cn.com>.
+// Copyright (c) 2006-2007, Lou Yihua.
 //
 
 #include "main.h"
@@ -81,10 +82,10 @@ PAL_RNGReadFrame(
    // Get the offset of the chunk.
    //
    fseek(fpRngMKF, 4 * uiRngNum, SEEK_SET);
-   fread(&uiOffset, sizeof(UINT), 1, fpRngMKF);
-   fread(&uiNextOffset, sizeof(UINT), 1, fpRngMKF);
-   uiOffset = SWAP32(uiOffset);
-   uiNextOffset = SWAP32(uiNextOffset);
+   PAL_fread(&uiOffset, sizeof(UINT), 1, fpRngMKF);
+   PAL_fread(&uiNextOffset, sizeof(UINT), 1, fpRngMKF);
+   uiOffset = SDL_SwapLE32(uiOffset);
+   uiNextOffset = SDL_SwapLE32(uiNextOffset);
 
    //
    // Get the length of the chunk.
@@ -102,8 +103,8 @@ PAL_RNGReadFrame(
    //
    // Get the number of sub chunks.
    //
-   fread(&uiChunkCount, sizeof(UINT), 1, fpRngMKF);
-   uiChunkCount = (SWAP32(uiChunkCount) - 4) / 4;
+   PAL_fread(&uiChunkCount, sizeof(UINT), 1, fpRngMKF);
+   uiChunkCount = (SDL_SwapLE32(uiChunkCount) - 4) / 4;
    if (uiFrameNum >= uiChunkCount)
    {
       return -1;
@@ -113,10 +114,10 @@ PAL_RNGReadFrame(
    // Get the offset of the sub chunk.
    //
    fseek(fpRngMKF, uiOffset + 4 * uiFrameNum, SEEK_SET);
-   fread(&uiSubOffset, sizeof(UINT), 1, fpRngMKF);
-   fread(&uiNextOffset, sizeof(UINT), 1, fpRngMKF);
-   uiSubOffset = SWAP32(uiSubOffset);
-   uiNextOffset = SWAP32(uiNextOffset);
+   PAL_fread(&uiSubOffset, sizeof(UINT), 1, fpRngMKF);
+   PAL_fread(&uiNextOffset, sizeof(UINT), 1, fpRngMKF);
+   uiSubOffset = SDL_SwapLE32(uiSubOffset);
+   uiNextOffset = SDL_SwapLE32(uiNextOffset);
 
    //
    // Get the length of the sub chunk.
@@ -130,22 +131,17 @@ PAL_RNGReadFrame(
    if (iChunkLen != 0)
    {
       fseek(fpRngMKF, uiOffset + uiSubOffset, SEEK_SET);
-      fread(lpBuffer, iChunkLen, 1, fpRngMKF);
-   }
-   else
-   {
-      return -1;
+      return (int)fread(lpBuffer, 1, iChunkLen, fpRngMKF);
    }
 
-   return iChunkLen;
+   return -1;
 }
 
 static INT
 PAL_RNGBlitToSurface(
-   INT                      iNumRNG,
-   INT                      iNumFrame,
-   SDL_Surface             *lpDstSurface,
-   FILE                    *fpRngMKF
+   const uint8_t   *rng,
+   int              length,
+   SDL_Surface     *lpDstSurface
 )
 /*++
   Purpose:
@@ -158,13 +154,11 @@ PAL_RNGBlitToSurface(
 
   Parameters:
 
-    [IN]  iNumRNG - The number of the animation in the MKF archive.
+    [IN]  rng - Pointer to the RNG data.
 
-    [IN]  iNumFrame - The number of the frame in the animation.
+    [IN]  length - Length of the RNG data.
 
     [OUT] lpDstSurface - pointer to the destination SDL surface.
-
-    [IN]  fpRngMKF - Pointer to the fopen'ed rng.mkf file.
 
   Return value:
 
@@ -172,56 +166,26 @@ PAL_RNGBlitToSurface(
 
 --*/
 {
-   INT                   ptr         = 0;
-   INT                   dst_ptr     = 0;
-   BYTE                  data        = 0;
-   WORD                  wdata       = 0;
-   INT                   x, y, i, n;
-   LPBYTE                rng         = NULL;
-   LPBYTE                buf         = NULL;
+   int                   ptr         = 0;
+   int                   dst_ptr     = 0;
+   uint16_t              wdata       = 0;
+   int                   x, y, i, n;
 
    //
    // Check for invalid parameters.
    //
-   if (lpDstSurface == NULL || iNumRNG < 0 || iNumFrame < 0)
+   if (lpDstSurface == NULL || length < 0)
    {
       return -1;
    }
-
-   buf = (LPBYTE)calloc(1, 65000);
-   if (buf == NULL)
-   {
-      return -1;
-   }
-
-   //
-   // Read the frame.
-   //
-   if (PAL_RNGReadFrame(buf, 65000, iNumRNG, iNumFrame, fpRngMKF) < 0)
-   {
-      free(buf);
-      return -1;
-   }
-
-   //
-   // Decompress the frame.
-   //
-   rng = (LPBYTE)calloc(1, 65000);
-   if (rng == NULL)
-   {
-      free(buf);
-      return -1;
-   }
-   Decompress(buf, rng, 65000);
-   free(buf);
 
    //
    // Draw the frame to the surface.
    // FIXME: Dirty and ineffective code, needs to be cleaned up
    //
-   while (TRUE)
+   while (ptr < length)
    {
-      data = rng[ptr++];
+      uint8_t data = rng[ptr++];
       switch (data)
       {
       case 0x00:
@@ -402,7 +366,6 @@ PAL_RNGBlitToSurface(
    }
 
 end:
-   free(rng);
    return 0;
 }
 
@@ -434,23 +397,24 @@ PAL_RNGPlay(
 
 --*/
 {
-   UINT            iTime;
-   int             iDelay = 800 / (iSpeed == 0 ? 16 : iSpeed);
-   FILE           *fp;
+   double         iDelay = (double)SDL_GetPerformanceFrequency() / (iSpeed == 0 ? 16 : iSpeed);
+   uint8_t        *rng = (uint8_t *)malloc(65000);
+   uint8_t        *buf = (uint8_t *)malloc(65000);
+   FILE           *fp = UTIL_OpenRequiredFile("rng.mkf");
 
-   fp = UTIL_OpenRequiredFile("rng.mkf");
-
-   for (; iStartFrame <= iEndFrame; iStartFrame++)
+   for (double iTime = SDL_GetPerformanceCounter(); rng && buf && iStartFrame != iEndFrame; iStartFrame++)
    {
-      iTime = SDL_GetTicks() + iDelay;
-
-      if (PAL_RNGBlitToSurface(iNumRNG, iStartFrame, gpScreen, fp) == -1)
+	  iTime += iDelay;
+      //
+      // Read, decompress and render the frame
+      //
+      if (PAL_RNGReadFrame(buf, 65000, iNumRNG, iStartFrame, fp) < 0 ||
+          PAL_RNGBlitToSurface(rng, Decompress(buf, rng, 65000), gpScreen) == -1)
       {
          //
          // Failed to get the frame, don't go further
          //
-         fclose(fp);
-         return;
+         break;
       }
 
       //
@@ -470,13 +434,10 @@ PAL_RNGPlay(
       //
       // Delay for a while
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= iTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+	  PAL_DelayUntilPC(iTime);
    }
 
    fclose(fp);
+   free(rng);
+   free(buf);
 }

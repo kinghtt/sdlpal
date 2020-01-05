@@ -1,9 +1,8 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
-//
-// Based on PAL MapEditor by Baldur.
 //
 // This file is part of SDLPAL.
 //
@@ -22,12 +21,33 @@
 //
 
 #include "palcommon.h"
+#include "global.h"
+#include "palcfg.h"
+
+BYTE
+PAL_CalcShadowColor(
+   BYTE bSourceColor
+)
+{
+    return ((bSourceColor&0xF0)|((bSourceColor&0x0F)>>1));
+}
 
 INT
 PAL_RLEBlitToSurface(
    LPCBITMAPRLE      lpBitmapRLE,
    SDL_Surface      *lpDstSurface,
    PAL_POS           pos
+)
+{
+    return PAL_RLEBlitToSurfaceWithShadow ( lpBitmapRLE, lpDstSurface, pos, FALSE );
+}
+
+INT
+PAL_RLEBlitToSurfaceWithShadow(
+   LPCBITMAPRLE      lpBitmapRLE,
+   SDL_Surface      *lpDstSurface,
+   PAL_POS           pos,
+   BOOL              bShadow
 )
 /*++
   Purpose:
@@ -42,6 +62,8 @@ PAL_RLEBlitToSurface(
     [OUT] lpDstSurface - pointer to the destination SDL surface.
 
     [IN]  pos - position of the destination area.
+
+    [IN]  bShadow - flag to mention whether blit source color or just shadow.
 
   Return value:
 
@@ -136,7 +158,10 @@ PAL_RLEBlitToSurface(
             //
             // Put the pixel onto the surface (FIXME: inefficient).
             //
-            ((LPBYTE)lpDstSurface->pixels)[y * lpDstSurface->pitch + x] = lpBitmapRLE[j];
+            if(bShadow)
+               ((LPBYTE)lpDstSurface->pixels)[y * lpDstSurface->pitch + x] = PAL_CalcShadowColor(((LPBYTE)lpDstSurface->pixels)[y * lpDstSurface->pitch + x]);
+            else
+               ((LPBYTE)lpDstSurface->pixels)[y * lpDstSurface->pitch + x] = lpBitmapRLE[j];
          }
          lpBitmapRLE += T;
          i += T;
@@ -489,7 +514,7 @@ PAL_FBPBlitToSurface(
    return 0;
 }
 
-UINT
+INT
 PAL_RLEGetWidth(
    LPCBITMAPRLE    lpBitmapRLE
 )
@@ -528,7 +553,7 @@ PAL_RLEGetWidth(
    return lpBitmapRLE[0] | (lpBitmapRLE[1] << 8);
 }
 
-UINT
+INT
 PAL_RLEGetHeight(
    LPCBITMAPRLE       lpBitmapRLE
 )
@@ -641,11 +666,8 @@ PAL_SpriteGetFrame(
    // Get the offset of the frame
    //
    iFrameNum <<= 1;
-#ifdef PAL_WIN95
    offset = ((lpSprite[iFrameNum] | (lpSprite[iFrameNum + 1] << 8)) << 1);
-#else
-   offset = (WORD)((lpSprite[iFrameNum] | (lpSprite[iFrameNum + 1] << 8)) << 1);
-#endif
+   if (offset == 0x18444) offset = (WORD)offset;
    return &lpSprite[offset];
 }
 
@@ -675,10 +697,10 @@ PAL_MKFGetChunkCount(
    }
 
    fseek(fp, 0, SEEK_SET);
-   fread(&iNumChunk, sizeof(INT), 1, fp);
-
-   iNumChunk = (SWAP32(iNumChunk) - 4) / 4;
-   return iNumChunk;
+   if (fread(&iNumChunk, sizeof(INT), 1, fp) == 1)
+      return (SDL_SwapLE32(iNumChunk) - 4) >> 2;
+   else
+      return 0;
 }
 
 INT
@@ -721,10 +743,11 @@ PAL_MKFGetChunkSize(
    // Get the offset of the specified chunk and the next chunk.
    //
    fseek(fp, 4 * uiChunkNum, SEEK_SET);
-   fread(&uiOffset, sizeof(UINT), 1, fp);
-   fread(&uiNextOffset, sizeof(UINT), 1, fp);
-   uiOffset = SWAP32(uiOffset);
-   uiNextOffset = SWAP32(uiNextOffset);
+   PAL_fread(&uiOffset, sizeof(UINT), 1, fp);
+   PAL_fread(&uiNextOffset, sizeof(UINT), 1, fp);
+
+   uiOffset = SDL_SwapLE32(uiOffset);
+   uiNextOffset = SDL_SwapLE32(uiNextOffset);
 
    //
    // Return the length of the chunk.
@@ -785,10 +808,10 @@ PAL_MKFReadChunk(
    // Get the offset of the chunk.
    //
    fseek(fp, 4 * uiChunkNum, SEEK_SET);
-   fread(&uiOffset, 4, 1, fp);
-   fread(&uiNextOffset, 4, 1, fp);
-   uiOffset = SWAP32(uiOffset);
-   uiNextOffset = SWAP32(uiNextOffset);
+   PAL_fread(&uiOffset, 4, 1, fp);
+   PAL_fread(&uiNextOffset, 4, 1, fp);
+   uiOffset = SDL_SwapLE32(uiOffset);
+   uiNextOffset = SDL_SwapLE32(uiNextOffset);
 
    //
    // Get the length of the chunk.
@@ -803,14 +826,10 @@ PAL_MKFReadChunk(
    if (uiChunkLen != 0)
    {
       fseek(fp, uiOffset, SEEK_SET);
-      fread(lpBuffer, uiChunkLen, 1, fp);
-   }
-   else
-   {
-      return -1;
+      return (int)fread(lpBuffer, 1, uiChunkLen, fp);
    }
 
-   return (INT)uiChunkLen;
+   return -1;
 }
 
 INT
@@ -858,25 +877,28 @@ PAL_MKFGetDecompressedSize(
    // Get the offset of the chunk.
    //
    fseek(fp, 4 * uiChunkNum, SEEK_SET);
-   fread(&uiOffset, 4, 1, fp);
-   uiOffset = SWAP32(uiOffset);
+   PAL_fread(&uiOffset, 4, 1, fp);
+   uiOffset = SDL_SwapLE32(uiOffset);
 
    //
    // Read the header.
    //
    fseek(fp, uiOffset, SEEK_SET);
-#ifdef PAL_WIN95
-   fread(buf, sizeof(DWORD), 1, fp);
-   buf[0] = SWAP32(buf[0]);
+   if (gConfig.fIsWIN95)
+   {
+      PAL_fread(buf, sizeof(DWORD), 1, fp);
+      buf[0] = SDL_SwapLE32(buf[0]);
 
-   return (INT)buf[0];
-#else
-   fread(buf, sizeof(DWORD), 2, fp);
-   buf[0] = SWAP32(buf[0]);
-   buf[1] = SWAP32(buf[1]);
+      return (INT)buf[0];
+   }
+   else
+   {
+      PAL_fread(buf, sizeof(DWORD), 2, fp);
+      buf[0] = SDL_SwapLE32(buf[0]);
+      buf[1] = SDL_SwapLE32(buf[1]);
 
-   return (buf[0] != 0x315f4a59) ? -1 : (INT)buf[1];
-#endif
+      return (buf[0] != 0x315f4a59) ? -1 : (INT)buf[1];
+   }
 }
 
 INT

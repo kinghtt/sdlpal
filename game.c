@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -47,7 +48,7 @@ PAL_GameStart(
       //
       // Fade in music if the player has loaded an old game.
       //
-      PAL_PlayMUS(gpGlobals->wNumMusic, TRUE, 1);
+      AUDIO_PlayMusic(gpGlobals->wNumMusic, TRUE, 1);
    }
 
    gpGlobals->fNeedToFadeIn = TRUE;
@@ -79,6 +80,7 @@ PAL_GameMain(
    // Show the opening menu.
    //
    gpGlobals->bCurrentSaveSlot = (BYTE)PAL_OpeningMenu();
+   gpGlobals->fInMainGame = TRUE;
 
    //
    // Initialize game data and set the flags to load the game resources.
@@ -113,12 +115,7 @@ PAL_GameMain(
       //
       // Wait for the time of one frame. Accept input here.
       //
-      PAL_ProcessEvent();
-      while (SDL_GetTicks() <= dwTime)
-      {
-         PAL_ProcessEvent();
-         SDL_Delay(1);
-      }
+      PAL_DelayUntil(dwTime);
 
       //
       // Set the time of the next frame.

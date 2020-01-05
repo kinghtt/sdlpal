@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,13 +23,9 @@
 #ifndef RNGPLAY_H
 #define RNGPLAY_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
 #include "common.h"
 
+PAL_C_LINKAGE
 VOID
 PAL_RNGPlay(
    INT           iNumRNG,
@@ -36,9 +33,5 @@ PAL_RNGPlay(
    INT           iNumFrames,
    INT           iSpeed
 );
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

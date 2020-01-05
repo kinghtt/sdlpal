@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,10 +23,24 @@
 #ifndef FIGHT_H
 #define FIGHT_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+#include "common.h"
+
+PAL_C_LINKAGE_BEGIN
+
+INT
+PAL_BattleSelectAutoTargetFrom(
+   INT
+);
+
+BOOL
+PAL_IsPlayerDying(
+   WORD
+);
+
+BOOL
+PAL_IsPlayerHealthy(
+   WORD     wPlayerRole
+);
 
 INT
 PAL_BattleSelectAutoTarget(
@@ -76,23 +91,11 @@ PAL_BattleEnemyPerformAction(
    WORD         wEnemyIndex
 );
 
-#ifdef PAL_WIN95
-
-VOID
-PAL_BattleShowPlayerPreMagicAnim(
-   WORD         wPlayerIndex,
-   WORD         wObjectID
-);
-
-#else
-
 VOID
 PAL_BattleShowPlayerPreMagicAnim(
    WORD         wPlayerIndex,
    BOOL         fSummon
 );
-
-#endif
 
 VOID
 PAL_BattleDelay(
@@ -114,7 +117,6 @@ PAL_BattleSimulateMagic(
    WORD       wBaseDamage
 );
 
-#ifdef __cplusplus
-}
-#endif
+PAL_C_LINKAGE_END
+
 #endif

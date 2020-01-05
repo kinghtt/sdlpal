@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -21,11 +22,6 @@
 
 #ifndef _MAP_H
 #define _MAP_H
-
-#ifdef __cplusplus
-extern "C"
-{
-#endif
 
 #include "common.h"
 
@@ -69,6 +65,8 @@ typedef struct tagPALMAP
 } PALMAP, *LPPALMAP;
 
 typedef const PALMAP *LPCPALMAP;
+
+PAL_C_LINKAGE_BEGIN
 
 LPPALMAP
 PAL_LoadMap(
@@ -116,6 +114,8 @@ PAL_MapBlitToSurface(
    BYTE                  ucLayer
 );
 
+PAL_C_LINKAGE_END
+
 //
 // Convert map location to the real location
 //
@@ -131,9 +131,5 @@ PAL_MapBlitToSurface(
    (x) = (BYTE)(PAL_X(pos) / 32);                     \
    (y) = (BYTE)(PAL_Y(pos) / 16);                     \
 }
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

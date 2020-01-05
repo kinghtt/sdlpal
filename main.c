@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -20,34 +21,28 @@
 //
 
 #include "main.h"
-#include "getopt.h"
+#include <setjmp.h>
 
-#ifdef PSP
-#include "main_PSP.h"
+#if defined(PAL_HAS_GIT_REVISION)
+# undef PAL_GIT_REVISION
+# include "generated.h"
 #endif
 
-#if defined (NDS) && defined (GEKKO)
-#include <fat.h>
-#endif
+static jmp_buf g_exit_jmp_buf;
+static int g_exit_code = 0;
 
-#ifdef PAL_WIN95
-#define BITMAPNUM_SPLASH_UP         3
-#define BITMAPNUM_SPLASH_DOWN       4
+char gExecutablePath[PAL_MAX_PATH];
+
+#define BITMAPNUM_SPLASH_UP         (gConfig.fIsWIN95 ? 0x03 : 0x26)
+#define BITMAPNUM_SPLASH_DOWN       (gConfig.fIsWIN95 ? 0x04 : 0x27)
 #define SPRITENUM_SPLASH_TITLE      0x47
 #define SPRITENUM_SPLASH_CRANE      0x49
-#define NUM_RIX_TITLE               0x5
-#else
-#define BITMAPNUM_SPLASH_UP         0x26
-#define BITMAPNUM_SPLASH_DOWN       0x27
-#define SPRITENUM_SPLASH_TITLE      0x47
-#define SPRITENUM_SPLASH_CRANE      0x49
-#define NUM_RIX_TITLE               0x5
-#endif
+#define NUM_RIX_TITLE               0x05
+
+
 static VOID
 PAL_Init(
-   WORD             wScreenWidth,
-   WORD             wScreenHeight,
-   BOOL             fFullScreen
+   VOID
 )
 /*++
   Purpose:
@@ -56,11 +51,7 @@ PAL_Init(
 
   Parameters:
 
-    [IN]  wScreenWidth - width of the screen.
-
-    [IN]  wScreenHeight - height of the screen.
-
-    [IN]  fFullScreen - TRUE to use full screen mode, FALSE to use windowed mode.
+    None.
 
   Return value:
 
@@ -69,62 +60,26 @@ PAL_Init(
 --*/
 {
    int           e;
-
-#if defined (NDS) && defined (GEKKO)
-   fatInitDefault();
+#if PAL_HAS_GIT_REVISION
+   UTIL_LogOutput(LOGLEVEL_DEBUG, "SDLPal build revision: %s\n", PAL_GIT_REVISION);
 #endif
-
-   //
-   // Initialize defaults, video and audio
-   //
-#if defined(DINGOO)
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) == -1)
-#elif defined (__WINPHONE__)
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) == -1)
-#else
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_CDROM | SDL_INIT_NOPARACHUTE | SDL_INIT_JOYSTICK) == -1)
-#endif
-   {
-#if defined (_WIN32) && SDL_MAJOR_VERSION == 1 && SDL_MINOR_VERSION <= 2
-      //
-      // Try the WINDIB driver if DirectX failed.
-      //
-      putenv("SDL_VIDEODRIVER=windib");
-      if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_NOPARACHUTE | SDL_INIT_JOYSTICK) == -1)
-      {
-         TerminateOnError("Could not initialize SDL: %s.\n", SDL_GetError());
-      }
-#else
-      TerminateOnError("Could not initialize SDL: %s.\n", SDL_GetError());
-#endif
-   }
 
    //
    // Initialize subsystems.
    //
-#ifdef GEKKO
-   e = VIDEO_Init_GEKKO(wScreenWidth, wScreenHeight, fFullScreen);
-#else
-   e = VIDEO_Init(wScreenWidth, wScreenHeight, fFullScreen);
-#endif
+   e = PAL_InitGlobals();
+   if (e != 0)
+   {
+	   TerminateOnError("Could not initialize global data: %d.\n", e);
+   }
+
+   e = VIDEO_Startup();
    if (e != 0)
    {
       TerminateOnError("Could not initialize Video: %d.\n", e);
    }
 
-   SDL_WM_SetCaption("Loading...", NULL);
-
-   e = PAL_InitGlobals();
-   if (e != 0)
-   {
-      TerminateOnError("Could not initialize global data: %d.\n", e);
-   }
-
-   e = PAL_InitFont();
-   if (e != 0)
-   {
-      TerminateOnError("Could not load fonts: %d.\n", e);
-   }
+   VIDEO_SetWindowTitle("Loading...");
 
    e = PAL_InitUI();
    if (e != 0)
@@ -138,28 +93,37 @@ PAL_Init(
       TerminateOnError("Could not initialize text subsystem: %d.\n", e);
    }
 
+   e = PAL_InitFont(&gConfig);
+   if (e != 0)
+   {
+      TerminateOnError("Could not load fonts: %d.\n", e);
+   }
+
    PAL_InitInput();
    PAL_InitResources();
-   SOUND_OpenAudio();
+   AUDIO_OpenDevice();
+   PAL_AVIInit();
 
-#ifdef PAL_WIN95
-#ifdef _DEBUG
-   SDL_WM_SetCaption("Pal WIN95 (Debug Build)", NULL);
+   VIDEO_SetWindowTitle(UTIL_va(UTIL_GlobalBuffer(0), PAL_GLOBAL_BUFFER_SIZE,
+	   "Pal %s%s%s%s",
+	   gConfig.fIsWIN95 ? "Win95" : "DOS",
+#if defined(_DEBUG) || defined(DEBUG)
+	   " (Debug) ",
 #else
-   SDL_WM_SetCaption("Pal WIN95", NULL);
+	   "",
 #endif
+#if defined(PAL_HAS_GIT_REVISION) && defined(PAL_GIT_REVISION)
+	   " ["  PAL_GIT_REVISION "] "
 #else
-#ifdef _DEBUG
-   SDL_WM_SetCaption("Pal (Debug Build)", NULL);
-#else
-   SDL_WM_SetCaption("Pal", NULL);
+	   ""
 #endif
-#endif
+       ,(gConfig.fEnableGLSL && gConfig.pszShader ? gConfig.pszShader : "")
+   ));
 }
 
 VOID
 PAL_Shutdown(
-   VOID
+   int exit_code
 )
 /*++
   Purpose:
@@ -168,7 +132,7 @@ PAL_Shutdown(
 
   Parameters:
 
-    None.
+    exit_code -  The exit code return to OS.
 
   Return value:
 
@@ -176,21 +140,29 @@ PAL_Shutdown(
 
 --*/
 {
-   SOUND_CloseAudio();
+   AUDIO_CloseDevice();
+   PAL_AVIShutdown();
    PAL_FreeFont();
    PAL_FreeResources();
-   PAL_FreeGlobals();
    PAL_FreeUI();
    PAL_FreeText();
    PAL_ShutdownInput();
    VIDEO_Shutdown();
+   
+   //
+   // global needs be free in last
+   // since subsystems may needs config content during destroy
+   // which also cleared here
+   //
+   PAL_FreeGlobals();
 
-   UTIL_CloseLog();
-
+   g_exit_code = exit_code;
+#if !__EMSCRIPTEN__
+   longjmp(g_exit_jmp_buf, 1);
+#else
    SDL_Quit();
-#if defined(GPH)
-	chdir("/usr/gp2x");
-	execl("./gp2xmenu", "./gp2xmenu", NULL);
+   UTIL_Platform_Quit();
+   return;
 #endif
 }
 
@@ -213,8 +185,10 @@ PAL_TrademarkScreen(
 
 --*/
 {
+   if (PAL_PlayAVI("1.avi")) return;
+
    PAL_SetPalette(3, FALSE);
-   PAL_RNGPlay(6, 0, 1000, 25);
+   PAL_RNGPlay(6, 0, -1, 25);
    UTIL_Delay(1000);
    PAL_FadeOut(1);
 }
@@ -249,6 +223,8 @@ PAL_SplashScreen(
    DWORD          dwTime, dwBeginTime;
    BOOL           fUseCD = TRUE;
 
+   if (PAL_PlayAVI("2.avi")) return;
+
    if (palette == NULL)
    {
       fprintf(stderr, "ERROR: PAL_SplashScreen(): palette == NULL\n");
@@ -265,20 +241,8 @@ PAL_SplashScreen(
    //
    // Create the surfaces
    //
-   lpBitmapDown = SDL_CreateRGBSurface(gpScreen->flags, 320, 200, 8,
-      gpScreen->format->Rmask, gpScreen->format->Gmask, gpScreen->format->Bmask,
-      gpScreen->format->Amask);
-   lpBitmapUp = SDL_CreateRGBSurface(gpScreen->flags, 320, 200, 8,
-      gpScreen->format->Rmask, gpScreen->format->Gmask, gpScreen->format->Bmask,
-      gpScreen->format->Amask);
-
-#if SDL_VERSION_ATLEAST(2, 0, 0)
-   SDL_SetSurfacePalette(lpBitmapDown, gpScreen->format->palette);
-   SDL_SetSurfacePalette(lpBitmapUp, gpScreen->format->palette);
-#else
-   SDL_SetPalette(lpBitmapDown, SDL_LOGPAL | SDL_PHYSPAL, VIDEO_GetPalette(), 0, 256);
-   SDL_SetPalette(lpBitmapUp, SDL_LOGPAL | SDL_PHYSPAL, VIDEO_GetPalette(), 0, 256);
-#endif
+   lpBitmapDown = VIDEO_CreateCompatibleSurface(gpScreen);
+   lpBitmapUp = VIDEO_CreateCompatibleSurface(gpScreen);
 
    //
    // Read the bitmaps
@@ -312,10 +276,10 @@ PAL_SplashScreen(
    //
    // Play the title music
    //
-   if (!SOUND_PlayCDA(7))
+   if (!AUDIO_PlayCDTrack(7))
    {
       fUseCD = FALSE;
-      PAL_PlayMUS(NUM_RIX_TITLE, TRUE, 2);
+      AUDIO_PlayMusic(NUM_RIX_TITLE, TRUE, 2);
    }
 
    //
@@ -350,13 +314,8 @@ PAL_SplashScreen(
       }
 
       VIDEO_SetPalette(rgCurrentPalette);
-#if SDL_VERSION_ATLEAST(2, 0, 0)
-	  SDL_SetSurfacePalette(lpBitmapDown, gpScreen->format->palette);
-	  SDL_SetSurfacePalette(lpBitmapUp, gpScreen->format->palette);
-#else
-      SDL_SetPalette(lpBitmapDown, SDL_LOGPAL | SDL_PHYSPAL, VIDEO_GetPalette(), 0, 256);
-      SDL_SetPalette(lpBitmapUp, SDL_LOGPAL | SDL_PHYSPAL, VIDEO_GetPalette(), 0, 256);
-#endif
+      VIDEO_UpdateSurfacePalette(lpBitmapDown);
+      VIDEO_UpdateSurfacePalette(lpBitmapUp);
 
       //
       // Draw the screen
@@ -375,7 +334,7 @@ PAL_SplashScreen(
       dstrect.y = 0;
       dstrect.h = srcrect.h;
 
-      SDL_BlitSurface(lpBitmapUp, &srcrect, gpScreen, &dstrect);
+	  VIDEO_CopySurface(lpBitmapUp, &srcrect, gpScreen, &dstrect);
 
       //
       // The lower part...
@@ -386,7 +345,7 @@ PAL_SplashScreen(
       dstrect.y = 200 - iImgPos;
       dstrect.h = srcrect.h;
 
-      SDL_BlitSurface(lpBitmapDown, &srcrect, gpScreen, &dstrect);
+	  VIDEO_CopySurface(lpBitmapDown, &srcrect, gpScreen, &dstrect);
 
       //
       // Draw the cranes...
@@ -448,13 +407,8 @@ PAL_SplashScreen(
                   rgCurrentPalette[i].b = (BYTE)(palette[i].b * ((float)dwTime / 15000));
                }
                VIDEO_SetPalette(rgCurrentPalette);
-#if SDL_VERSION_ATLEAST(2, 0, 0)
-			   SDL_SetSurfacePalette(lpBitmapDown, gpScreen->format->palette);
-			   SDL_SetSurfacePalette(lpBitmapUp, gpScreen->format->palette);
-#else
-			   SDL_SetPalette(lpBitmapDown, SDL_PHYSPAL | SDL_LOGPAL, VIDEO_GetPalette(), 0, 256);
-			   SDL_SetPalette(lpBitmapUp, SDL_PHYSPAL | SDL_LOGPAL, VIDEO_GetPalette(), 0, 256);
-#endif
+               VIDEO_UpdateSurfacePalette(lpBitmapDown);
+               VIDEO_UpdateSurfacePalette(lpBitmapUp);
                UTIL_Delay(8);
                dwTime += 250;
             }
@@ -478,17 +432,19 @@ PAL_SplashScreen(
       }
    }
 
-   SDL_FreeSurface(lpBitmapDown);
-   SDL_FreeSurface(lpBitmapUp);
+   VIDEO_FreeSurface(lpBitmapDown);
+   VIDEO_FreeSurface(lpBitmapUp);
    free(buf);
 
    if (!fUseCD)
    {
-      PAL_PlayMUS(0, FALSE, 1);
+      AUDIO_PlayMusic(0, FALSE, 1);
    }
 
    PAL_FadeOut(1);
 }
+
+
 
 int
 main(
@@ -512,126 +468,66 @@ main(
 
 --*/
 {
-   WORD          wScreenWidth = 0, wScreenHeight = 0;
-   int           c;
-   BOOL          fFullScreen = FALSE;
+#if !defined( __EMSCRIPTEN__ ) && !defined(__WINRT__)
+   memset(gExecutablePath,0,PAL_MAX_PATH);
+   strncpy(gExecutablePath, argv[0], PAL_MAX_PATH);
+#endif
 
-#if defined(__APPLE__) && !defined(__IOS__)
-   char *p = strstr(argv[0], "/Pal.app/");
+#if PAL_HAS_PLATFORM_STARTUP
+   UTIL_Platform_Startup(argc,argv);
+#endif
 
-   if (p != NULL)
+#if !__EMSCRIPTEN__
+   if (setjmp(g_exit_jmp_buf) != 0)
    {
-      char buf[4096];
-      strcpy(buf, argv[0]);
-      buf[p - argv[0]] = '\0';
-      chdir(buf);
+	   // A longjmp is made, should exit here
+	   SDL_Quit();
+	   UTIL_Platform_Quit();
+	   return g_exit_code;
    }
 #endif
 
-#ifdef __WINPHONE__
-   SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeRight");
-   SDL_SetHint(SDL_HINT_WINRT_HANDLE_BACK_BUTTON, "1");
-#endif
-
-   UTIL_OpenLog();
-
-#ifdef _WIN32
-#if SDL_MAJOR_VERSION == 1 && SDL_MINOR_VERSION <= 2
-   putenv("SDL_VIDEODRIVER=directx");
-#endif
-#endif
-
-#ifndef __SYMBIAN32__
+#if !defined(UNIT_TEST) || defined(UNIT_TEST_GAME_INIT)
    //
-   // Parse parameters.
+   // Initialize SDL
    //
-   while ((c = getopt(argc, argv, "w:h:fjm")) != -1)
+   if (SDL_Init(PAL_SDL_INIT_FLAGS) == -1)
    {
-      switch (c)
-      {
-      case 'w':
-         //
-         // Set the width of the screen
-         //
-         wScreenWidth = atoi(optarg);
-         if (wScreenHeight == 0)
-         {
-            wScreenHeight = wScreenWidth * 200 / 320;
-         }
-         break;
-
-      case 'h':
-         //
-         // Set the height of the screen
-         //
-         wScreenHeight = atoi(optarg);
-         if (wScreenWidth == 0)
-         {
-            wScreenWidth = wScreenHeight * 320 / 200;
-         }
-         break;
-
-      case 'f':
-         //
-         // Fullscreen Mode
-         //
-         fFullScreen = TRUE;
-         break;
-
-      case 'j':
-         //
-         // Disable joystick
-         //
-         g_fUseJoystick = FALSE;
-         break;
-
-#ifdef PAL_HAS_NATIVEMIDI
-      case 'm':
-         //
-         // Use MIDI music
-         //
-         g_fUseMidi = TRUE;
-         break;
-#endif
-      }
+	   TerminateOnError("Could not initialize SDL: %s.\n", SDL_GetError());
    }
-#endif
+
+   PAL_LoadConfig(TRUE);
 
    //
-   // Default resolution is 640x400 (windowed) or 640x480 (fullscreen).
+   // Platform-specific initialization
    //
-   if (wScreenWidth == 0)
-   {
-#ifdef __SYMBIAN32__
-#ifdef __S60_5X__
-      wScreenWidth = 640;
-      wScreenHeight = 360;
-#else
-      wScreenWidth = 320;
-      wScreenHeight = 240;
-#endif
-#else
-#if defined(GPH) || defined(DINGOO)
-      wScreenWidth = 320;
-      wScreenHeight = 240;
-#elif defined (__IOS__) || defined (__ANDROID__)
-      wScreenWidth = 320;
-      wScreenHeight = 200;
-#else
-      wScreenWidth = 640;
-      wScreenHeight = fFullScreen ? 480 : 400;
-#endif
-#endif
-   }
+   if (UTIL_Platform_Init(argc, argv) != 0)
+	   return -1;
+
+   //
+   // Should launch setting?
+   // Generally, the condition should never be TRUE as the UTIL_Platform_Init is assumed
+   // to handle gConfig.fLaunchSetting correctly. However, it may actually be true due to
+   // the activatation event on WinRT platform, so close the current process to make new
+   // process go to setting.
+   // For platforms without configuration page available, this condition will NEVER be true.
+   //
+   if (PAL_HAS_CONFIG_PAGE && gConfig.fLaunchSetting)
+	   return 0;
+
+   //
+   // If user requests a file-based log, then add it after the system-specific one.
+   //
+   if (gConfig.pszLogFile)
+	   UTIL_LogAddOutputCallback(UTIL_LogToFile, gConfig.iLogLevel);
 
    //
    // Initialize everything
    //
-#ifdef PSP
-   sdlpal_psp_init();
+   PAL_Init();
 #endif
-   PAL_Init(wScreenWidth, wScreenHeight, fFullScreen);
 
+#if !defined(UNIT_TEST)
    //
    // Show the trademark screen and splash screen
    //
@@ -648,4 +544,8 @@ main(
    //
    assert(FALSE);
    return 255;
+#else
+   extern int testmain(int argc, char *argv[]);
+   return testmain(argc, argv);
+#endif
 }

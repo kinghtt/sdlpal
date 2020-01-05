@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -21,119 +22,84 @@
 
 #include "main.h"
 
-#if !defined (CYGWIN) && !defined (DINGOO) &&  !defined (GEKKO) && !defined (GPH)
+static int  g_iMidiCurrent = -1;
+static NativeMidiSong *g_pMidi = NULL;
+static int  g_iMidiVolume = PAL_MAX_VOLUME;
 
-static INT iMidCurrent = -1;
-static BOOL fMidLoop = FALSE;
+void
+MIDI_SetVolume(
+	int       iVolume
+)
+{
+#if PAL_HAS_NATIVEMIDI
+	g_iMidiVolume = iVolume;
+	if (g_pMidi)
+	{
+		native_midi_setvolume(g_pMidi, iVolume * 127 / PAL_MAX_VOLUME);
+	}
+#endif
+}
 
-static NativeMidiSong *g_pMid = NULL;
-
-VOID
+void
 MIDI_Play(
-   INT       iNumRIX,
-   BOOL      fLoop
-)
-/*++
-  Purpose:
-
-    Start playing the specified music in MIDI format.
-
-  Parameters:
-
-    [IN]  iNumRIX - number of the music. 0 to stop playing current music.
-
-    [IN]  fLoop - Whether the music should be looped or not.
-
-  Return value:
-
-    None.
-
---*/
-{
-   FILE            *fp;
-   unsigned char   *buf;
-   int              size;
-   SDL_RWops       *rw;
-#ifdef PAL_WIN95
-   char             filename[1024];
-#endif
-
-   if (g_pMid != NULL && iNumRIX == iMidCurrent && native_midi_active())
-   {
-      return;
-   }
-
-   SOUND_PlayCDA(-1);
-   native_midi_freesong(g_pMid);
-   g_pMid = NULL;
-   iMidCurrent = -1;
-
-   if (g_fNoMusic || iNumRIX <= 0)
-   {
-      return;
-   }
-
-#ifdef PAL_WIN95
-   sprintf(filename, "%s/musics/%.3d.mid", PAL_PREFIX, iNumRIX);
-
-   g_pMid = native_midi_loadsong(filename);
-   if (g_pMid != NULL)
-   {
-      native_midi_start(g_pMid);
-
-      iMidCurrent = iNumRIX;
-      fMidLoop = fLoop;
-   }
-#else
-   fp = UTIL_OpenFile("midi.mkf");
-   if (fp == NULL)
-   {
-      return;
-   }
-
-   if (iNumRIX > PAL_MKFGetChunkCount(fp))
-   {
-      fclose(fp);
-      return;
-   }
-
-   size = PAL_MKFGetChunkSize(iNumRIX, fp);
-   if (size <= 0)
-   {
-      fclose(fp);
-      return;
-   }
-
-   buf = (unsigned char *)UTIL_malloc(size);
-
-   PAL_MKFReadChunk((LPBYTE)buf, size, iNumRIX, fp);
-   fclose(fp);
-
-   rw = SDL_RWFromConstMem((const void *)buf, size);
-
-   g_pMid = native_midi_loadsong_RW(rw);
-   if (g_pMid != NULL)
-   {
-      native_midi_start(g_pMid);
-
-      iMidCurrent = iNumRIX;
-      fMidLoop = fLoop;
-   }
-
-   SDL_RWclose(rw);
-   free(buf);
-#endif
-}
-
-VOID
-MIDI_CheckLoop(
-   VOID
+	int       iNumRIX,
+	BOOL      fLoop
 )
 {
-   if (fMidLoop && g_pMid != NULL && !native_midi_active())
-   {
-      MIDI_Play(iMidCurrent, TRUE);
-   }
-}
+#if PAL_HAS_NATIVEMIDI
+	if (!native_midi_detect())
+		return;
 
+	if (native_midi_active(g_pMidi) && iNumRIX == g_iMidiCurrent)
+	{
+		return;
+	}
+
+	native_midi_stop(g_pMidi);
+	native_midi_freesong(g_pMidi);
+	g_pMidi = NULL;
+	g_iMidiCurrent = -1;
+
+	if (!AUDIO_MusicEnabled() || iNumRIX <= 0)
+	{
+		return;
+	}
+
+	if (gConfig.fIsWIN95)
+	{
+		g_pMidi = native_midi_loadsong(UTIL_GetFullPathName(PAL_BUFFER_SIZE_ARGS(0), gConfig.pszGamePath, PAL_va(1, "Musics%s%.3d.mid", PAL_NATIVE_PATH_SEPARATOR, iNumRIX)));
+	}
+
+	if (!g_pMidi)
+	{
+		FILE    *fp  = NULL;
+		uint8_t *buf = NULL;
+		int      size;
+
+		if ((fp = UTIL_OpenFile("midi.mkf")) != NULL)
+		{
+			if ((size = PAL_MKFGetChunkSize(iNumRIX, fp)) > 0 &&
+				(buf = (uint8_t*)UTIL_malloc(size)))
+			{
+				PAL_MKFReadChunk(buf, size, iNumRIX, fp);
+			}
+			fclose(fp);
+		}
+
+		if (buf)
+		{
+			SDL_RWops *rw = SDL_RWFromConstMem(buf, size);
+			g_pMidi = native_midi_loadsong_RW(rw);
+			SDL_RWclose(rw);
+			free(buf);
+		}
+	}
+
+	if (g_pMidi)
+	{
+		MIDI_SetVolume(g_iMidiVolume);
+		native_midi_start(g_pMidi, fLoop);
+		g_iMidiCurrent = iNumRIX;
+	}
 #endif
+}

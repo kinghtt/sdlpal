@@ -1,6 +1,7 @@
-/* -*- mode: c; tab-width: 4; c-basic-offset: 3; c-file-style: "linux" -*- */
+/* -*- mode: c; tab-width: 4; c-basic-offset: 4; c-file-style: "linux" -*- */
 //
-// Copyright (c) 2009, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2009-2011, Wei Mingzhi <whistler_wmz@users.sf.net>.
+// Copyright (c) 2011-2020, SDLPAL development team.
 // All rights reserved.
 //
 // This file is part of SDLPAL.
@@ -22,12 +23,10 @@
 #ifndef UIGAME_H
 #define UIGAME_H
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
+#include "common.h"
 #include "ui.h"
+
+PAL_C_LINKAGE_BEGIN
 
 VOID
 PAL_DrawOpeningMenuBackground(
@@ -42,6 +41,11 @@ PAL_OpeningMenu(
 INT
 PAL_SaveSlotMenu(
    WORD        wDefaultSlot
+);
+
+WORD
+PAL_TripleMenu(
+   WORD  wThirdWord
 );
 
 BOOL
@@ -89,7 +93,11 @@ PAL_EquipItemMenu(
    WORD           wItem
 );
 
-#ifdef __cplusplus
-}
-#endif
+VOID
+PAL_QuitGame(
+   VOID
+);
+
+PAL_C_LINKAGE_END
+
 #endif
